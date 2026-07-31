@@ -1,6 +1,6 @@
 {
   "name": "@moshcoder/moshpit-dns",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "license": "MIT",
   "description": "Resolve Moshpit names on this machine. A tiny DNS bridge for .whatever endings, routed per-suffix so the rest of the internet is untouched.",
@@ -38,6 +38,7 @@
     ".": "./lib/dns.mjs",
     "./cli": "./bin/moshpit-dns.mjs",
     "./system": "./lib/system.mjs",
-    "./service": "./lib/service.mjs"
+    "./service": "./lib/service.mjs",
+    "./package.json": "./package.json"
   }
 }
