@@ -1,0 +1,15 @@
+{
+  "name": "@moshcoder/moshpit-dns",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Resolve Moshpit names on this machine. A tiny DNS bridge for .whatever endings, routed per-suffix so the rest of the internet is untouched.",
+  "keywords": ["moshpit", "dns", "resolver", "namespace", "alt-root"],
+  "repository": { "type": "git", "url": "git+https://github.com/moshcoder/moshpit-dns.git" },
+  "homepage": "https://github.com/moshcoder/moshpit-dns",
+  "bin": { "moshpit-dns": "bin/moshpit-dns.mjs" },
+  "files": ["bin", "lib", "README.md", "LICENSE"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" }
+}
