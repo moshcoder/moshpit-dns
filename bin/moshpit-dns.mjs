@@ -49,17 +49,18 @@ Moshpit name until this bridge is running and your resolver points at it.
 \`enable\` edits system DNS and needs root; it routes only the Moshpit endings,
 so every other name keeps using your normal resolver.`;
 
-const argv = process.argv.slice(2);
-const [sub, ...rest] = argv;
-const flag = (name, fallback) => {
-  const i = rest.indexOf(`--${name}`);
-  return i >= 0 && rest[i + 1] ? rest[i + 1] : fallback;
+let sub, rest, flag, has, registryBase, port;
+const setup = (argv) => {
+  [sub, ...rest] = argv;
+  flag = (name, fallback) => {
+    const i = rest.indexOf(`--${name}`);
+    return i >= 0 && rest[i + 1] ? rest[i + 1] : fallback;
+  };
+  has = (name) => rest.includes(`--${name}`);
+  registryBase = flag("registry", DEFAULT_REGISTRY_BASE);
+  port = Number(flag("port", DEFAULT_PORT));
 };
-const has = (name) => rest.includes(`--${name}`);
 const out = console.log;
-
-const registryBase = flag("registry", DEFAULT_REGISTRY_BASE);
-const port = Number(flag("port", DEFAULT_PORT));
 const entry = fileURLToPath(new URL("./moshpit-dns.mjs", import.meta.url));
 
 const parkingAddress = async (host = DEFAULT_PARKING_HOST) => {
@@ -70,7 +71,15 @@ const parkingAddress = async (host = DEFAULT_PARKING_HOST) => {
 const routingMarker = (platform) =>
   platform === "macos" ? "/etc/resolver" : "/etc/systemd/resolved.conf.d/moshpit.conf";
 
-async function main() {
+/**
+ * The whole command, as a function.
+ *
+ * A bin is a script and cannot be called; this can. `moshcode dns …` delegates
+ * straight to it, so the wrapper gets every verb this grows without either
+ * copying the code or spawning a process to reach it.
+ */
+export async function run(argv = process.argv.slice(2)) {
+  setup(argv);
   if (!sub || sub === "help" || sub === "--help") { out(USAGE); return 0; }
 
   if (sub === "tlds") {
@@ -228,5 +237,3 @@ async function main() {
   out(`unknown: ${sub}\n\n${USAGE}`);
   return 1;
 }
-
-process.exitCode = (await main()) || 0;
