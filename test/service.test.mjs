@@ -57,10 +57,31 @@ test("absolute paths, because a service outlives the shell that made it", () => 
 });
 
 test("the port and registry ride along into the definition", () => {
-  const plan = installPlan({ ...base, platform: "linux", port: 5399, registryBase: "https://my.pit" });
+  const plan = installPlan({
+    ...base,
+    platform: "linux",
+    port: 5399,
+    ttl: 86400,
+    registryBase: "https://my.pit",
+  });
   const unit = plan.steps.find((s) => s.kind === "write");
   assert.match(unit.content, /--port 5399/);
+  assert.match(unit.content, /--ttl 86400/);
   assert.match(unit.content, /--registry https:\/\/my\.pit/);
+});
+
+test("the TTL is preserved by every service definition", () => {
+  const linux = installPlan({ ...base, platform: "linux", ttl: 0 });
+  assert.match(linux.steps.find((s) => s.kind === "write").content, /--ttl 0/);
+
+  const macos = installPlan({ ...base, platform: "macos", ttl: 0 });
+  assert.match(
+    macos.steps.find((s) => s.kind === "write").content,
+    /<string>--ttl<\/string>\s*<string>0<\/string>/,
+  );
+
+  const windows = installPlan({ ...base, platform: "windows", ttl: 0 });
+  assert.match(windows.steps[0].args.at(-1), /"--ttl" "0"/);
 });
 
 test("uninstall stops it and forgets it, and leaves routing alone", () => {

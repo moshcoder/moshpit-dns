@@ -63,10 +63,11 @@ test("a compression pointer in a question is rejected, not followed", () => {
 
 test("buildResponse answers with an A record", () => {
   const buf = query("a.eggs");
-  const res = buildResponse(parseQuery(buf), buf, "203.0.113.7", 30);
+  const res = buildResponse(parseQuery(buf), buf, "203.0.113.7");
   assert.equal(res.readUInt16BE(0), 0x1234, "id echoed");
   assert.equal(res.readUInt16BE(6), 1, "one answer");
   assert.equal((res.readUInt16BE(2) & 0x000f) >>> 0, 0, "RCODE 0");
+  assert.equal(res.readUInt32BE(buf.length + 6), 30, "30-second default TTL");
   assert.deepEqual([...res.subarray(res.length - 4)], [203, 0, 113, 7]);
 });
 
@@ -161,6 +162,7 @@ test("the server answers a real query over UDP", async (t) => {
   const dgram = await import("node:dgram");
   const server = await createServer({
     port: 0,
+    ttl: 86400,
     parkingAddress: "198.51.100.9",
     fetchImpl: okJson({ name_registered: true, target: null }),
   });
@@ -178,6 +180,7 @@ test("the server answers a real query over UDP", async (t) => {
   client.close();
 
   assert.equal(reply.readUInt16BE(6), 1, "answered");
+  assert.equal(reply.readUInt32BE(query("california.oranges").length + 6), 86400, "custom TTL on the wire");
   assert.deepEqual([...reply.subarray(reply.length - 4)], [198, 51, 100, 9], "parked → parking IP");
 });
 
