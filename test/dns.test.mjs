@@ -180,3 +180,13 @@ test("the server answers a real query over UDP", async (t) => {
   assert.equal(reply.readUInt16BE(6), 1, "answered");
   assert.deepEqual([...reply.subarray(reply.length - 4)], [198, 51, 100, 9], "parked → parking IP");
 });
+
+test("dashes are not part of a Moshpit name", () => {
+  // Kept identical to the registry: a name this accepts and the registry
+  // rejects resolves to a page saying it does not exist.
+  assert.equal(parseRegistryName("blue.lazy-loaded"), null);
+  assert.equal(parseRegistryName("register-me.eggs"), null);
+  assert.equal(parseRegistryName("a-b.c-d"), null);
+  assert.deepEqual(parseRegistryName("california.oranges"), { label: "california", tld: "oranges" });
+  assert.deepEqual(parseRegistryName("123.420"), { label: "123", tld: "420" });
+});
