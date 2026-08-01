@@ -51,7 +51,7 @@ moshpit-dns service uninstall stop doing that
 moshpit-dns tlds [--json]     list the endings claimed in the Pit
 moshpit-dns resolve <name> [--json]
                              what a name resolves to, and why
-moshpit-dns start             run the bridge in the foreground
+moshpit-dns start [--ttl N]   run the bridge in the foreground
 moshpit-dns install           print the resolver config without applying it
 ```
 
@@ -67,6 +67,17 @@ non-zero exit status where the command normally fails.
 ```sh
 moshpit-dns resolve california.oranges --json | jq .address
 moshpit-dns status --json | jq '.warnings[]?.code'
+```
+
+DNS answers use a 30-second TTL by default. Pass `--ttl N` to `start`, `enable`,
+or `service install` to choose a whole number of seconds from 0 through
+4294967295. `enable` carries the value into its detached bridge, and
+`service install` records it in the persistent service definition.
+
+```sh
+moshpit-dns start --ttl 300
+sudo moshpit-dns enable --ttl 300
+moshpit-dns service install --ttl 300
 ```
 
 ## What needs root, and what does not

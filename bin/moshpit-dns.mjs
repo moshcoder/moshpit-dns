@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { promises as dnsPromises } from "node:dns";
 import { fileURLToPath } from "node:url";
 import {
-  DEFAULT_HOST, DEFAULT_PARKING_HOST, DEFAULT_PORT, DEFAULT_REGISTRY_BASE,
+  DEFAULT_HOST, DEFAULT_PARKING_HOST, DEFAULT_PORT, DEFAULT_REGISTRY_BASE, DEFAULT_TTL,
   createServer, dnsmasqConf, fetchTlds, resolvedConf, resolveName,
 } from "../lib/dns.mjs";
 import {
@@ -45,13 +45,29 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   --json      with tlds/resolve/status: print machine-readable diagnostics
   --backend   linux only: systemd-resolved (default) or dnsmasq
   --port N    the bridge's port (Windows must use 53 — NRPT carries no port)
+  --ttl N     DNS answer lifetime in seconds (default: ${DEFAULT_TTL})
 
 The registry speaks HTTP, not DNS, so nothing outside a browser can reach a
 Moshpit name until this bridge is running and your resolver points at it.
 \`enable\` edits system DNS and needs root; it routes only the Moshpit endings,
 so every other name keeps using your normal resolver.`;
 
-let sub, rest, flag, has, registryBase, port;
+const MAX_TTL = 0xffffffff;
+
+/** Parse a DNS TTL without accepting fractions, signs, or numeric shorthand. */
+export function parseTtl(value) {
+  const text = String(value ?? "");
+  if (!/^\d+$/.test(text)) {
+    throw new RangeError(`--ttl must be an integer from 0 to ${MAX_TTL}`);
+  }
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed > MAX_TTL) {
+    throw new RangeError(`--ttl must be an integer from 0 to ${MAX_TTL}`);
+  }
+  return parsed;
+}
+
+let sub, rest, flag, has, registryBase, port, ttl, ttlError;
 const setup = (argv) => {
   [sub, ...rest] = argv;
   flag = (name, fallback) => {
@@ -61,6 +77,14 @@ const setup = (argv) => {
   has = (name) => rest.includes(`--${name}`);
   registryBase = flag("registry", DEFAULT_REGISTRY_BASE);
   port = Number(flag("port", DEFAULT_PORT));
+  const ttlIndex = rest.indexOf("--ttl");
+  try {
+    ttl = ttlIndex === -1 ? DEFAULT_TTL : parseTtl(rest[ttlIndex + 1]);
+    ttlError = null;
+  } catch (error) {
+    ttl = DEFAULT_TTL;
+    ttlError = error.message;
+  }
 };
 const out = console.log;
 const entry = fileURLToPath(new URL("./moshpit-dns.mjs", import.meta.url));
@@ -151,6 +175,7 @@ export async function run(argv = process.argv.slice(2)) {
   const json = has("json");
   const outJson = (value) => out(JSON.stringify(value, null, 2));
   if (!sub || sub === "help" || sub === "--help") { out(USAGE); return 0; }
+  if (ttlError) { out(ttlError); return 1; }
 
   if (sub === "tlds") {
     try {
@@ -212,7 +237,7 @@ export async function run(argv = process.argv.slice(2)) {
     const park = await parkingAddress();
     if (!park) out("! parking host did not resolve — unpointed names will return NXDOMAIN");
     const server = await createServer({
-      port, registryBase, parkingAddress: park,
+      port, ttl, registryBase, parkingAddress: park,
       onQuery: ({ name, address }) => out(`  ${name} → ${address || "NXDOMAIN"}`),
     });
     out(`moshpit-dns on ${server.address}:${server.port} (registry ${registryBase})`);
@@ -237,7 +262,14 @@ export async function run(argv = process.argv.slice(2)) {
       return 1;
     }
     const plan = verb === "install"
-      ? installPlan({ platform, node: process.execPath, entry, port: requiredPort(platform, port), registryBase })
+      ? installPlan({
+          platform,
+          node: process.execPath,
+          entry,
+          port: requiredPort(platform, port),
+          ttl,
+          registryBase,
+        })
       : uninstallPlan({ platform });
 
     if (has("dry-run")) { out(`# service ${verb} on ${platform} — nothing below has been run`); out(describePlan(plan)); return 0; }
@@ -294,7 +326,7 @@ export async function run(argv = process.argv.slice(2)) {
       return applied.ok ? 0 : 1;
     }
     if (sub === "enable") {
-      const started = await startDaemon({ port: wanted, registryBase, entry });
+      const started = await startDaemon({ port: wanted, ttl, registryBase, entry });
       out(started.alreadyRunning
         ? `  ok   bridge already running (pid ${started.pid})`
         : `  ok   bridge started on ${DEFAULT_HOST}:${wanted} (pid ${started.pid})`);

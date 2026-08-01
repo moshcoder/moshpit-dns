@@ -4,10 +4,13 @@
 // platform — which matters, because the Windows and macOS paths would otherwise
 // only ever be exercised by someone running Windows or macOS.
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
-  WINDOWS_REQUIRED_PORT, describePlan, detectPlatform, disablePlan, enablePlan, requiredPort,
+  WINDOWS_REQUIRED_PORT, describePlan, detectPlatform, disablePlan, enablePlan, requiredPort, startDaemon,
 } from "../lib/system.mjs";
 
 const TLDS = ["moshpit", "eggs"];
@@ -117,4 +120,40 @@ test("a plan reads as something you can agree to before running it", () => {
   assert.match(text, /write\s+\/etc\/systemd/);
   assert.match(text, /run\s+systemctl restart systemd-resolved/);
   assert.match(text, /Domains=~moshpit ~eggs/, "the actual file contents, not a summary");
+});
+
+test("the detached bridge receives the selected TTL", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "moshpit-dns-test-"));
+  const path = join(dir, "bridge.pid");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  let invocation;
+  let unrefCalled = false;
+  const result = await startDaemon({
+    port: 5354,
+    ttl: 86400,
+    registryBase: "https://my.pit",
+    path,
+    entry: "/opt/moshpit-dns/bin/moshpit-dns.mjs",
+    spawnImpl(command, args, options) {
+      invocation = { command, args, options };
+      return { pid: 4242, unref: () => { unrefCalled = true; } };
+    },
+  });
+
+  assert.equal(result.started, true);
+  assert.equal(unrefCalled, true);
+  assert.deepEqual(invocation.args, [
+    "/opt/moshpit-dns/bin/moshpit-dns.mjs",
+    "dns",
+    "start",
+    "--port",
+    "5354",
+    "--ttl",
+    "86400",
+    "--registry",
+    "https://my.pit",
+  ]);
+  assert.deepEqual(invocation.options, { detached: true, stdio: "ignore" });
+  assert.equal(await readFile(path, "utf8"), "4242\n");
 });

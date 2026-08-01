@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildResolutionReport, buildStatusReport } from "../bin/moshpit-dns.mjs";
+import { buildResolutionReport, buildStatusReport, parseTtl } from "../bin/moshpit-dns.mjs";
 import { DEFAULT_REGISTRY_BASE } from "../lib/dns.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/cli.mjs", import.meta.url));
@@ -137,6 +137,28 @@ test("status --json emits one parseable diagnostic document", async (t) => {
   assert.deepEqual(report.registry, { url: registry, reachable: true, count: 2 });
   assert.equal(typeof report.needsRefresh, "boolean");
   assert.ok(Array.isArray(report.warnings));
+});
+
+test("--ttl accepts the DNS wire range and rejects ambiguous values", async () => {
+  assert.equal(parseTtl("0"), 0);
+  assert.equal(parseTtl("30"), 30);
+  assert.equal(parseTtl("4294967295"), 0xffffffff);
+
+  for (const value of [undefined, "-1", "1.5", "1e3", "4294967296", "nope"]) {
+    assert.throws(() => parseTtl(value), /--ttl must be an integer from 0 to 4294967295/);
+    const args = value === undefined ? ["tlds", "--ttl"] : ["tlds", "--ttl", value];
+    const result = await run(args);
+    assert.equal(result.status, 1, String(value));
+    assert.equal(result.stderr, "", String(value));
+    assert.equal(result.stdout, "--ttl must be an integer from 0 to 4294967295\n", String(value));
+  }
+});
+
+test("service install records the selected TTL", async () => {
+  const result = await run(["service", "install", "--ttl", "86400", "--dry-run"]);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /"?--ttl"?\s+"?86400"?/);
 });
 
 test("buildResolutionReport describes a parked DNS answer", () => {
