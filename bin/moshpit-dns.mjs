@@ -29,18 +29,20 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
 
   moshpit-dns enable            route the Moshpit endings here and start the bridge
   moshpit-dns disable           stop it and remove the routing
-  moshpit-dns status            what is running, what is routed, does it work
+  moshpit-dns status [--json]   what is running, what is routed, does it work
   moshpit-dns refresh           re-apply routing for endings claimed since
 
   moshpit-dns service install   keep the bridge running across reboots
   moshpit-dns service uninstall stop doing that
 
-  moshpit-dns tlds              list the endings claimed in the Pit
-  moshpit-dns resolve <name>    show what a name resolves to, and why
+  moshpit-dns tlds [--json]     list the endings claimed in the Pit
+  moshpit-dns resolve <name> [--json]
+                               show what a name resolves to, and why
   moshpit-dns start             run the bridge in the foreground
   moshpit-dns install           print the resolver config without applying it
 
   --dry-run   with enable/disable/refresh/service: print what would be done
+  --json      with tlds/resolve/status: print machine-readable diagnostics
   --backend   linux only: systemd-resolved (default) or dnsmasq
   --port N    the bridge's port (Windows must use 53 — NRPT carries no port)
 
@@ -71,6 +73,72 @@ const parkingAddress = async (host = DEFAULT_PARKING_HOST) => {
 const routingMarker = (platform) =>
   platform === "macos" ? "/etc/resolver" : "/etc/systemd/resolved.conf.d/moshpit.conf";
 
+const resolutionReasons = {
+  live: "registry target",
+  parked: "claimed, not pointed at an IP",
+  unreachable: "registry unreachable — not parking a name we could not look up",
+  "not-a-name": "not a Moshpit name: one label and one ending",
+};
+
+/** A stable resolution record for scripts, including the address DNS will answer. */
+export function buildResolutionReport(name, result, address, registry = DEFAULT_REGISTRY_BASE) {
+  return {
+    registry,
+    name,
+    status: result.status,
+    address,
+    target: result.target,
+    registered: result.registered ?? null,
+    reason: resolutionReasons[result.status],
+  };
+}
+
+/** Turn the platform probes into one machine-readable diagnostic snapshot. */
+export function buildStatusReport({
+  platform,
+  daemon,
+  routed,
+  marker,
+  known,
+  routedCount,
+  registry,
+}) {
+  const needsRefresh = Boolean(routedCount && known && routedCount !== known.length);
+  const warnings = [];
+  if (routed && !daemon.running) {
+    warnings.push({
+      code: "bridge-not-running",
+      message: "routing is in place but the bridge is not running",
+      fix: "sudo moshpit-dns enable",
+      undo: "sudo moshpit-dns disable",
+    });
+  }
+  if (needsRefresh) {
+    warnings.push({
+      code: "routing-out-of-date",
+      message: `routing covers ${routedCount} endings but ${known.length} are claimed`,
+      fix: "sudo moshpit-dns refresh",
+    });
+  }
+
+  return {
+    platform: platform || process.platform,
+    bridge: daemon,
+    routing: {
+      configured: routed,
+      marker: routed === null ? null : marker,
+      count: routedCount,
+    },
+    registry: {
+      url: registry,
+      reachable: known !== null,
+      count: known?.length ?? null,
+    },
+    needsRefresh,
+    warnings,
+  };
+}
+
 /**
  * The whole command, as a function.
  *
@@ -80,25 +148,63 @@ const routingMarker = (platform) =>
  */
 export async function run(argv = process.argv.slice(2)) {
   setup(argv);
+  const json = has("json");
+  const outJson = (value) => out(JSON.stringify(value, null, 2));
   if (!sub || sub === "help" || sub === "--help") { out(USAGE); return 0; }
 
   if (sub === "tlds") {
-    const tlds = await fetchTlds({ registryBase });
-    out(tlds.length ? tlds.map((t) => `.${t}`).join("\n") : "no endings claimed yet");
-    return 0;
+    try {
+      const tlds = await fetchTlds({ registryBase });
+      if (json) {
+        outJson({
+          registry: registryBase,
+          reachable: true,
+          count: tlds.length,
+          tlds,
+          error: null,
+        });
+      } else {
+        out(tlds.length ? tlds.map((t) => `.${t}`).join("\n") : "no endings claimed yet");
+      }
+      return 0;
+    } catch (error) {
+      if (json) {
+        outJson({
+          registry: registryBase,
+          reachable: false,
+          count: null,
+          tlds: [],
+          error: "registry unreachable",
+        });
+      } else {
+        const detail = error instanceof Error ? error.message : String(error);
+        out(`registry unreachable — ${detail}`);
+      }
+      return 1;
+    }
   }
 
   if (sub === "resolve") {
     const name = rest.find((a) => !a.startsWith("-"));
-    if (!name) { out("usage: moshpit-dns resolve <name>"); return 1; }
+    if (!name) {
+      if (json) outJson({ name: null, error: "missing name" });
+      else out("usage: moshpit-dns resolve <name>");
+      return 1;
+    }
     const result = await resolveName(name, { registryBase });
     const park = result.status === "parked" ? await parkingAddress() : null;
-    out({
-      live: () => `${name} → ${result.target}`,
-      parked: () => `${name} → ${park || "(parking host unresolvable)"}  [claimed, not pointed at an IP]`,
-      unreachable: () => `${name} → NXDOMAIN  [registry unreachable — not parking a name we could not look up]`,
-      "not-a-name": () => `${name} → NXDOMAIN  [not a Moshpit name: one label and one ending]`,
-    }[result.status]());
+    const address = result.status === "live" ? result.target : park;
+    const report = buildResolutionReport(name, result, address, registryBase);
+    if (json) {
+      outJson(report);
+    } else {
+      out({
+        live: () => `${name} → ${result.target}`,
+        parked: () => `${name} → ${park || "(parking host unresolvable)"}  [${report.reason}]`,
+        unreachable: () => `${name} → NXDOMAIN  [${report.reason}]`,
+        "not-a-name": () => `${name} → NXDOMAIN  [${report.reason}]`,
+      }[result.status]());
+    }
     return result.status === "live" || result.status === "parked" ? 0 : 1;
   }
 
@@ -206,12 +312,33 @@ export async function run(argv = process.argv.slice(2)) {
   if (sub === "status") {
     const platform = detectPlatform();
     const daemon = await daemonStatus();
+    const marker = routingMarker(platform);
+    const routed = platform === "windows" ? null : existsSync(marker);
+    const known = await fetchTlds({ registryBase }).catch(() => null);
+    let routedCount = null;
+    if (routed && known && platform === "linux") {
+      const conf = await readFile(marker, "utf8").catch(() => "");
+      routedCount = (conf.match(/~[a-z0-9-]+/g) || []).length;
+    }
+
+    const report = buildStatusReport({
+      platform,
+      daemon,
+      routed,
+      marker,
+      known,
+      routedCount,
+      registry: registryBase,
+    });
+
+    if (json) {
+      outJson(report);
+      return 0;
+    }
+
     out(`platform   ${platform || process.platform}`);
     out(`bridge     ${daemon.running ? `running (pid ${daemon.pid})`
       : daemon.stale ? `NOT running — stale pidfile for ${daemon.pid}` : "not running"}`);
-
-    const marker = routingMarker(platform);
-    const routed = platform === "windows" ? null : existsSync(marker);
     out(`routing    ${routed === null ? "(check NRPT: Get-DnsClientNrptRule)"
       : routed ? `configured (${marker})` : "not configured"}`);
 
@@ -221,15 +348,10 @@ export async function run(argv = process.argv.slice(2)) {
       out("  fix: sudo moshpit-dns enable    undo: sudo moshpit-dns disable");
     }
 
-    const known = await fetchTlds({ registryBase }).catch(() => null);
     out(known ? `registry   reachable — ${known.length} endings claimed` : "registry   unreachable");
 
-    if (routed && known && platform === "linux") {
-      const conf = await readFile(marker, "utf8").catch(() => "");
-      const count = (conf.match(/~[a-z0-9-]+/g) || []).length;
-      if (count && count !== known.length) {
-        out(`\n! routing covers ${count} endings but ${known.length} are claimed — run \`sudo moshpit-dns refresh\``);
-      }
+    if (report.needsRefresh) {
+      out(`\n! routing covers ${routedCount} endings but ${known.length} are claimed — run \`sudo moshpit-dns refresh\``);
     }
     return 0;
   }

@@ -42,20 +42,32 @@ means the worst failure is that Moshpit names stop working.
 ```
 moshpit-dns enable            route the endings here and start the bridge
 moshpit-dns disable           undo both
-moshpit-dns status            what is running, what is routed, does it work
+moshpit-dns status [--json]   what is running, what is routed, does it work
 moshpit-dns refresh           re-apply routing for endings claimed since
 
 moshpit-dns service install   keep the bridge running across reboots
 moshpit-dns service uninstall stop doing that
 
-moshpit-dns tlds              list the endings claimed in the Pit
-moshpit-dns resolve <name>    what a name resolves to, and why
+moshpit-dns tlds [--json]     list the endings claimed in the Pit
+moshpit-dns resolve <name> [--json]
+                             what a name resolves to, and why
 moshpit-dns start             run the bridge in the foreground
 moshpit-dns install           print the resolver config without applying it
 ```
 
 `--dry-run` prints the exact file contents and commands before anything runs.
 This edits system DNS under sudo, so being inspectable first is the point.
+
+`tlds`, `resolve`, and `status` accept `--json` for scripts and monitoring. The
+JSON includes registry reachability, the final DNS address for a resolution,
+and structured status warnings without mixing human-readable lines into stdout.
+Failures such as an unreachable registry still produce valid JSON and a
+non-zero exit status where the command normally fails.
+
+```sh
+moshpit-dns resolve california.oranges --json | jq .address
+moshpit-dns status --json | jq '.warnings[]?.code'
+```
 
 ## What needs root, and what does not
 
