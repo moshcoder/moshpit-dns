@@ -16,7 +16,8 @@ import { readFile } from "node:fs/promises";
 import { promises as dnsPromises } from "node:dns";
 import { fileURLToPath } from "node:url";
 import {
-  DEFAULT_HOST, DEFAULT_PARKING_HOST, DEFAULT_PORT, DEFAULT_REGISTRY_BASE, DEFAULT_TTL,
+  DEFAULT_HOST, DEFAULT_PARKING_HOST, DEFAULT_PORT, DEFAULT_REGISTRY_BASE, DEFAULT_TIMEOUT_MS,
+  DEFAULT_TTL,
   createServer, dnsmasqConf, fetchTlds, resolvedConf, resolveName,
 } from "../lib/dns.mjs";
 import {
@@ -46,6 +47,7 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   --backend   linux only: systemd-resolved (default) or dnsmasq
   --port N    the bridge's port (Windows must use 53 — NRPT carries no port)
   --ttl N     DNS answer lifetime in seconds (default: ${DEFAULT_TTL})
+  --timeout N registry request deadline in milliseconds (default: ${DEFAULT_TIMEOUT_MS})
 
 The registry speaks HTTP, not DNS, so nothing outside a browser can reach a
 Moshpit name until this bridge is running and your resolver points at it.
@@ -53,6 +55,7 @@ Moshpit name until this bridge is running and your resolver points at it.
 so every other name keeps using your normal resolver.`;
 
 const MAX_TTL = 0xffffffff;
+const MAX_TIMEOUT_MS = 0x7fffffff;
 
 /** Parse a DNS TTL without accepting fractions, signs, or numeric shorthand. */
 export function parseTtl(value) {
@@ -67,7 +70,22 @@ export function parseTtl(value) {
   return parsed;
 }
 
-let sub, rest, flag, has, registryBase, port, ttl, ttlError;
+/** Parse a registry deadline without allowing zero, fractions, or timer overflow. */
+export function parseTimeout(value) {
+  const text = String(value ?? "");
+  if (!/^\d+$/.test(text)) {
+    throw new RangeError(`--timeout must be an integer from 1 to ${MAX_TIMEOUT_MS}`);
+  }
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_TIMEOUT_MS) {
+    throw new RangeError(`--timeout must be an integer from 1 to ${MAX_TIMEOUT_MS}`);
+  }
+  return parsed;
+}
+
+const VALUE_FLAGS = new Set(["--backend", "--port", "--registry", "--timeout", "--ttl"]);
+
+let sub, rest, flag, has, positionals, registryBase, port, ttl, ttlError, timeoutMs, timeoutError;
 const setup = (argv) => {
   [sub, ...rest] = argv;
   flag = (name, fallback) => {
@@ -75,6 +93,17 @@ const setup = (argv) => {
     return i >= 0 && rest[i + 1] ? rest[i + 1] : fallback;
   };
   has = (name) => rest.includes(`--${name}`);
+  positionals = () => {
+    const values = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      if (VALUE_FLAGS.has(rest[i])) {
+        i += 1;
+      } else if (!rest[i].startsWith("-")) {
+        values.push(rest[i]);
+      }
+    }
+    return values;
+  };
   registryBase = flag("registry", DEFAULT_REGISTRY_BASE);
   port = Number(flag("port", DEFAULT_PORT));
   const ttlIndex = rest.indexOf("--ttl");
@@ -84,6 +113,14 @@ const setup = (argv) => {
   } catch (error) {
     ttl = DEFAULT_TTL;
     ttlError = error.message;
+  }
+  const timeoutIndex = rest.indexOf("--timeout");
+  try {
+    timeoutMs = timeoutIndex === -1 ? DEFAULT_TIMEOUT_MS : parseTimeout(rest[timeoutIndex + 1]);
+    timeoutError = null;
+  } catch (error) {
+    timeoutMs = DEFAULT_TIMEOUT_MS;
+    timeoutError = error.message;
   }
 };
 const out = console.log;
@@ -176,10 +213,11 @@ export async function run(argv = process.argv.slice(2)) {
   const outJson = (value) => out(JSON.stringify(value, null, 2));
   if (!sub || sub === "help" || sub === "--help") { out(USAGE); return 0; }
   if (ttlError) { out(ttlError); return 1; }
+  if (timeoutError) { out(timeoutError); return 1; }
 
   if (sub === "tlds") {
     try {
-      const tlds = await fetchTlds({ registryBase });
+      const tlds = await fetchTlds({ registryBase, timeoutMs });
       if (json) {
         outJson({
           registry: registryBase,
@@ -210,13 +248,13 @@ export async function run(argv = process.argv.slice(2)) {
   }
 
   if (sub === "resolve") {
-    const name = rest.find((a) => !a.startsWith("-"));
+    const name = positionals()[0];
     if (!name) {
       if (json) outJson({ name: null, error: "missing name" });
       else out("usage: moshpit-dns resolve <name>");
       return 1;
     }
-    const result = await resolveName(name, { registryBase });
+    const result = await resolveName(name, { registryBase, timeoutMs });
     const park = result.status === "parked" ? await parkingAddress() : null;
     const address = result.status === "live" ? result.target : park;
     const report = buildResolutionReport(name, result, address, registryBase);
@@ -237,7 +275,7 @@ export async function run(argv = process.argv.slice(2)) {
     const park = await parkingAddress();
     if (!park) out("! parking host did not resolve — unpointed names will return NXDOMAIN");
     const server = await createServer({
-      port, ttl, registryBase, parkingAddress: park,
+      port, ttl, timeoutMs, registryBase, parkingAddress: park,
       onQuery: ({ name, address }) => out(`  ${name} → ${address || "NXDOMAIN"}`),
     });
     out(`moshpit-dns on ${server.address}:${server.port} (registry ${registryBase})`);
@@ -245,7 +283,7 @@ export async function run(argv = process.argv.slice(2)) {
   }
 
   if (sub === "install") {
-    const tlds = await fetchTlds({ registryBase });
+    const tlds = await fetchTlds({ registryBase, timeoutMs });
     if (!tlds.length) { out("no endings claimed yet — nothing to route"); return 1; }
     out(resolvedConf(tlds, { port }));
     out("# ...or, for dnsmasq:");
@@ -256,7 +294,7 @@ export async function run(argv = process.argv.slice(2)) {
   if (sub === "service") {
     const platform = detectPlatform();
     if (!platform) { out(`unsupported platform: ${process.platform}`); return 1; }
-    const verb = rest.find((a) => !a.startsWith("-"));
+    const verb = positionals()[0];
     if (verb !== "install" && verb !== "uninstall") {
       out("usage: moshpit-dns service <install|uninstall>");
       return 1;
@@ -268,6 +306,7 @@ export async function run(argv = process.argv.slice(2)) {
           entry,
           port: requiredPort(platform, port),
           ttl,
+          timeoutMs,
           registryBase,
         })
       : uninstallPlan({ platform });
@@ -293,7 +332,7 @@ export async function run(argv = process.argv.slice(2)) {
     const linuxBackend = flag("backend", "systemd-resolved");
 
     let tlds = [];
-    try { tlds = await fetchTlds({ registryBase }); } catch { tlds = []; }
+    try { tlds = await fetchTlds({ registryBase, timeoutMs }); } catch { tlds = []; }
     if (sub !== "disable" && !tlds.length) { out("no endings claimed yet — nothing to route"); return 1; }
 
     let plan;
@@ -326,7 +365,7 @@ export async function run(argv = process.argv.slice(2)) {
       return applied.ok ? 0 : 1;
     }
     if (sub === "enable") {
-      const started = await startDaemon({ port: wanted, ttl, registryBase, entry });
+      const started = await startDaemon({ port: wanted, ttl, timeoutMs, registryBase, entry });
       out(started.alreadyRunning
         ? `  ok   bridge already running (pid ${started.pid})`
         : `  ok   bridge started on ${DEFAULT_HOST}:${wanted} (pid ${started.pid})`);
@@ -346,7 +385,7 @@ export async function run(argv = process.argv.slice(2)) {
     const daemon = await daemonStatus();
     const marker = routingMarker(platform);
     const routed = platform === "windows" ? null : existsSync(marker);
-    const known = await fetchTlds({ registryBase }).catch(() => null);
+    const known = await fetchTlds({ registryBase, timeoutMs }).catch(() => null);
     let routedCount = null;
     if (routed && known && platform === "linux") {
       const conf = await readFile(marker, "utf8").catch(() => "");

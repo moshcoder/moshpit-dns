@@ -84,6 +84,20 @@ test("the TTL is preserved by every service definition", () => {
   assert.match(windows.steps[0].args.at(-1), /"--ttl" "0"/);
 });
 
+test("the registry timeout is preserved by every service definition", () => {
+  const linux = installPlan({ ...base, platform: "linux", timeoutMs: 1500 });
+  assert.match(linux.steps.find((s) => s.kind === "write").content, /--timeout 1500/);
+
+  const macos = installPlan({ ...base, platform: "macos", timeoutMs: 1500 });
+  assert.match(
+    macos.steps.find((s) => s.kind === "write").content,
+    /<string>--timeout<\/string>\s*<string>1500<\/string>/,
+  );
+
+  const windows = installPlan({ ...base, platform: "windows", timeoutMs: 1500 });
+  assert.match(windows.steps[0].args.at(-1), /"--timeout" "1500"/);
+});
+
 test("uninstall stops it and forgets it, and leaves routing alone", () => {
   for (const platform of ["linux", "macos", "windows"]) {
     const plan = uninstallPlan({ platform, home: HOME });
