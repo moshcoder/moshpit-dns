@@ -37,13 +37,15 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   moshpit-dns service uninstall stop doing that
 
   moshpit-dns tlds [--json]     list the endings claimed in the Pit
+  moshpit-dns records <name> [CNAME|MX|TXT] [--json]
+                               inspect records published for a name
   moshpit-dns resolve <name> [--json]
                                show what a name resolves to, and why
   moshpit-dns start             run the bridge in the foreground
   moshpit-dns install           print the resolver config without applying it
 
   --dry-run   with enable/disable/refresh/service: print what would be done
-  --json      with tlds/resolve/status: print machine-readable diagnostics
+  --json      with tlds/records/resolve/status: print machine-readable diagnostics
   --backend   linux only: systemd-resolved (default) or dnsmasq
   --port N    the bridge's port (Windows must use 53 — NRPT carries no port)
   --ttl N     DNS answer lifetime in seconds (default: ${DEFAULT_TTL})
@@ -56,6 +58,7 @@ so every other name keeps using your normal resolver.`;
 
 const MAX_TTL = 0xffffffff;
 const MAX_TIMEOUT_MS = 0x7fffffff;
+const PUBLISHED_RECORD_TYPES = new Set(["CNAME", "MX", "TXT"]);
 
 /** Parse a DNS TTL without accepting fractions, signs, or numeric shorthand. */
 export function parseTtl(value) {
@@ -141,6 +144,28 @@ const resolutionReasons = {
   "not-a-name": "not a Moshpit name: one label and one ending",
 };
 
+function normalizePublishedRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const type = typeof record.type === "string" ? record.type.trim().toUpperCase() : null;
+  if (!PUBLISHED_RECORD_TYPES.has(type) || typeof record.value !== "string") return null;
+
+  const normalized = { type, value: record.value };
+  if (record.priority === null) {
+    normalized.priority = null;
+  } else if (
+    type === "MX"
+    && Number.isInteger(record.priority)
+    && record.priority >= 0
+    && record.priority <= 65_535
+  ) {
+    normalized.priority = record.priority;
+  }
+  if (Number.isInteger(record.ttl) && record.ttl >= 0 && record.ttl <= MAX_TTL) {
+    normalized.ttl = record.ttl;
+  }
+  return normalized;
+}
+
 /** A stable resolution record for scripts, including the address DNS will answer. */
 export function buildResolutionReport(name, result, address, registry = DEFAULT_REGISTRY_BASE) {
   return {
@@ -151,6 +176,38 @@ export function buildResolutionReport(name, result, address, registry = DEFAULT_
     target: result.target,
     registered: result.registered ?? null,
     reason: resolutionReasons[result.status],
+  };
+}
+
+/** Build a stable, sanitized view of the records returned by the registry. */
+export function buildRecordsReport(
+  name,
+  result,
+  type = null,
+  registry = DEFAULT_REGISTRY_BASE,
+) {
+  const registered = result.status === "live"
+    ? true
+    : result.status === "parked" ? result.registered === true : null;
+  const exists = registered === true;
+  const records = exists && Array.isArray(result.records)
+    ? result.records
+      .map(normalizePublishedRecord)
+      .filter((record) => record && (!type || record.type === type))
+    : [];
+
+  return {
+    registry,
+    name,
+    status: result.status,
+    exists,
+    registered,
+    type,
+    count: records.length,
+    records,
+    error: result.status === "unreachable"
+      ? "registry unreachable"
+      : result.status === "not-a-name" ? "invalid Moshpit name" : null,
   };
 }
 
@@ -245,6 +302,67 @@ export async function run(argv = process.argv.slice(2)) {
       }
       return 1;
     }
+  }
+
+  if (sub === "records") {
+    const [name, requestedType] = positionals();
+    const type = requestedType?.toUpperCase() || null;
+    if (!name) {
+      if (json) {
+        outJson({
+          registry: registryBase,
+          name: null,
+          status: null,
+          exists: false,
+          registered: null,
+          type: null,
+          count: 0,
+          records: [],
+          error: "missing name",
+        });
+      }
+      else out("usage: moshpit-dns records <name> [CNAME|MX|TXT]");
+      return 1;
+    }
+    if (type && !PUBLISHED_RECORD_TYPES.has(type)) {
+      if (json) {
+        outJson({
+          registry: registryBase,
+          name,
+          status: null,
+          exists: false,
+          registered: null,
+          type,
+          count: 0,
+          records: [],
+          error: "unsupported record type",
+        });
+      }
+      else out(`unsupported record type: ${requestedType} (expected CNAME, MX, or TXT)`);
+      return 1;
+    }
+
+    const result = await resolveName(name, { registryBase, timeoutMs, records: true });
+    const report = buildRecordsReport(name, result, type, registryBase);
+
+    if (json) {
+      outJson(report);
+    } else if (report.error) {
+      out(`${name}: ${report.error}`);
+    } else if (!report.exists) {
+      out(`${name}: name is not registered`);
+    } else if (!report.records.length) {
+      out(type ? `no ${type} records published for ${name}` : `no records published for ${name}`);
+    } else {
+      for (const record of report.records) {
+        const priority = record.type === "MX" && record.priority != null
+          ? ` ${record.priority}`
+          : "";
+        const recordTtl = record.ttl != null ? ` (TTL ${record.ttl})` : "";
+        out(`${record.type}${priority} ${record.value}${recordTtl}`);
+      }
+    }
+    return report.error ? 1 : 0;
   }
 
   if (sub === "resolve") {

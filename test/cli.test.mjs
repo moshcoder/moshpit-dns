@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  buildRecordsReport,
   buildResolutionReport,
   buildStatusReport,
   parseTimeout,
@@ -31,15 +32,54 @@ function run(args) {
   });
 }
 
-async function startRegistry(t) {
+async function startRegistry(t, onRequest = () => {}) {
   const server = createServer((request, response) => {
+    onRequest(request);
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/moshpit/tlds") {
       response.end(JSON.stringify({ tlds: [{ tld: "Eggs" }, "agent"] }));
       return;
     }
-    if (request.url === "/api/moshpit/resolve?name=blue.eggs") {
-      response.end(JSON.stringify({ name_registered: true, target: "203.0.113.9" }));
+    if (request.url === "/api/moshpit/resolve?name=blue.eggs"
+      || request.url === "/api/moshpit/resolve?name=blue.eggs&records=1") {
+      response.end(JSON.stringify({
+        name_registered: true,
+        target: "203.0.113.9",
+        ...(request.url.endsWith("records=1") ? {
+          records: [
+            { type: "MX", value: "mail.example.com", priority: 10, ttl: 300 },
+            { type: "TXT", value: "v=spf1 -all", priority: null, ttl: 60 },
+          ],
+        } : {}),
+      }));
+      return;
+    }
+    if (request.url === "/api/moshpit/resolve?name=dirty.eggs&records=1") {
+      response.end(JSON.stringify({
+        name_registered: true,
+        target: null,
+        records: [
+          null,
+          { type: "TXT" },
+          { value: "missing type" },
+          { type: "AAAA", value: "2001:db8::1" },
+          {
+            type: "mx",
+            value: "mail.example.com",
+            priority: { invalid: true },
+            ttl: "not-a-number",
+            extra: "not part of the record contract",
+          },
+        ],
+      }));
+      return;
+    }
+    if (request.url === "/api/moshpit/resolve?name=free.eggs&records=1") {
+      response.end(JSON.stringify({ name_registered: false, target: null, records: [] }));
+      return;
+    }
+    if (request.url === "/api/moshpit/resolve?name=empty.eggs&records=1") {
+      response.end(JSON.stringify({ name_registered: true, target: null, records: [] }));
       return;
     }
     response.statusCode = 404;
@@ -98,6 +138,159 @@ test("resolve --json reports the address and decision reason", async (t) => {
     registered: null,
     reason: "registry target",
   });
+});
+
+test("records inspects and filters the registry record set", async (t) => {
+  const registry = await startRegistry(t);
+  const human = await run(["records", "blue.eggs", "mx", "--registry", registry]);
+  assert.equal(human.status, 0);
+  assert.equal(human.stderr, "");
+  assert.equal(human.stdout, "MX 10 mail.example.com (TTL 300)\n");
+
+  const allHuman = await run(["records", "blue.eggs", "--registry", registry]);
+  assert.equal(allHuman.status, 0);
+  assert.equal(allHuman.stderr, "");
+  assert.equal(
+    allHuman.stdout,
+    "MX 10 mail.example.com (TTL 300)\nTXT v=spf1 -all (TTL 60)\n",
+  );
+
+  const result = await run(["records", "blue.eggs", "--registry", registry, "--json"]);
+  assert.equal(result.status, 0);
+  assert.deepEqual(jsonOutput(result), {
+    registry,
+    name: "blue.eggs",
+    status: "live",
+    exists: true,
+    registered: true,
+    type: null,
+    count: 2,
+    records: [
+      { type: "MX", value: "mail.example.com", priority: 10, ttl: 300 },
+      { type: "TXT", value: "v=spf1 -all", priority: null, ttl: 60 },
+    ],
+    error: null,
+  });
+});
+
+test("records rejects unsupported types before contacting the registry", async (t) => {
+  let requests = 0;
+  const registry = await startRegistry(t, () => { requests += 1; });
+  const result = await run(["records", "blue.eggs", "SRV", "--registry", registry, "--json"]);
+
+  assert.equal(result.status, 1);
+  assert.equal(requests, 0);
+  assert.deepEqual(jsonOutput(result), {
+    registry,
+    name: "blue.eggs",
+    status: null,
+    exists: false,
+    registered: null,
+    type: "SRV",
+    count: 0,
+    records: [],
+    error: "unsupported record type",
+  });
+});
+
+test("records reports an empty published set in human mode", async (t) => {
+  const registry = await startRegistry(t);
+  const all = await run(["records", "empty.eggs", "--registry", registry]);
+  assert.equal(all.status, 0);
+  assert.equal(all.stderr, "");
+  assert.equal(all.stdout, "no records published for empty.eggs\n");
+
+  const filtered = await run(["records", "empty.eggs", "TXT", "--registry", registry]);
+  assert.equal(filtered.status, 0);
+  assert.equal(filtered.stderr, "");
+  assert.equal(filtered.stdout, "no TXT records published for empty.eggs\n");
+});
+
+test("records sanitizes malformed registry entries and normalizes record types", async (t) => {
+  const registry = await startRegistry(t);
+  const human = await run(["records", "dirty.eggs", "MX", "--registry", registry]);
+  assert.equal(human.status, 0);
+  assert.equal(human.stderr, "");
+  assert.equal(human.stdout, "MX mail.example.com\n");
+
+  const result = await run(["records", "dirty.eggs", "MX", "--registry", registry, "--json"]);
+
+  assert.equal(result.status, 0);
+  assert.deepEqual(jsonOutput(result), {
+    registry,
+    name: "dirty.eggs",
+    status: "parked",
+    exists: true,
+    registered: true,
+    type: "MX",
+    count: 1,
+    records: [{ type: "MX", value: "mail.example.com" }],
+    error: null,
+  });
+});
+
+test("records distinguishes an unregistered name from a parked name", async (t) => {
+  const registry = await startRegistry(t);
+  const human = await run(["records", "free.eggs", "--registry", registry]);
+  assert.equal(human.status, 0);
+  assert.equal(human.stderr, "");
+  assert.equal(human.stdout, "free.eggs: name is not registered\n");
+
+  const result = await run(["records", "free.eggs", "--registry", registry, "--json"]);
+  assert.equal(result.status, 0);
+  assert.equal(jsonOutput(result).exists, false);
+  assert.equal(jsonOutput(result).registered, false);
+});
+
+test("records keeps missing and malformed names machine-readable", async () => {
+  const missing = await run(["records", "--json"]);
+  assert.equal(missing.status, 1);
+  assert.deepEqual(jsonOutput(missing), {
+    registry: DEFAULT_REGISTRY_BASE,
+    name: null,
+    status: null,
+    exists: false,
+    registered: null,
+    type: null,
+    count: 0,
+    records: [],
+    error: "missing name",
+  });
+
+  const malformed = await run(["records", "localhost", "--json"]);
+  assert.equal(malformed.status, 1);
+  assert.deepEqual(jsonOutput(malformed), {
+    registry: DEFAULT_REGISTRY_BASE,
+    name: "localhost",
+    status: "not-a-name",
+    exists: false,
+    registered: null,
+    type: null,
+    count: 0,
+    records: [],
+    error: "invalid Moshpit name",
+  });
+});
+
+test("buildRecordsReport keeps malformed records out of the JSON contract", () => {
+  const report = buildRecordsReport("dirty.eggs", {
+    status: "parked",
+    registered: true,
+    records: [
+      null,
+      { type: "TXT" },
+      {
+        type: "txt",
+        value: "hello",
+        priority: { invalid: true },
+        ttl: "bad",
+        extra: true,
+      },
+    ],
+  });
+
+  assert.equal(report.count, 1);
+  assert.deepEqual(report.records, [{ type: "TXT", value: "hello" }]);
 });
 
 test("resolve --json keeps malformed and missing names machine-readable", async () => {
