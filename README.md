@@ -18,9 +18,19 @@ The Moshpit registry speaks HTTP, not DNS. `pit.moshcode.sh` answers
 redirects tabs works, but redirecting is not resolving, and nothing outside that
 browser benefits from it.
 
-This is the bridge: a tiny authoritative resolver that answers A queries for
-Moshpit endings out of the registry's HTTP API, and is deliberately silent about
-everything else.
+This is the bridge: a tiny authoritative resolver that answers Moshpit endings
+out of the registry's HTTP API, and is deliberately silent about everything
+else.
+
+It answers `AAAA` and `A` from the name's target, and `CNAME`, `MX` and `TXT`
+from the records its owner publishes in the Pit. Question types it does not
+serve get an empty `NOERROR` rather than `NXDOMAIN` — the name exists, there is
+just nothing to say about that question, and denying the name outright would
+take its address down with it.
+
+A name pointed at a hostname rather than an address answers with the `CNAME` it
+published, for the client to chase through its own resolver. This bridge never
+does clearnet DNS itself.
 
 ## One suffix, not your whole resolver
 
