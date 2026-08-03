@@ -5,7 +5,12 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildResolutionReport, buildStatusReport, parseTtl } from "../bin/moshpit-dns.mjs";
+import {
+  buildResolutionReport,
+  buildStatusReport,
+  parseTimeout,
+  parseTtl,
+} from "../bin/moshpit-dns.mjs";
 import { DEFAULT_REGISTRY_BASE } from "../lib/dns.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/cli.mjs", import.meta.url));
@@ -73,7 +78,15 @@ test("tlds stays human-readable by default and supports structured JSON", async 
 
 test("resolve --json reports the address and decision reason", async (t) => {
   const registry = await startRegistry(t);
-  const result = await run(["resolve", "blue.eggs", "--registry", registry, "--json"]);
+  const result = await run([
+    "resolve",
+    "--timeout",
+    "1500",
+    "blue.eggs",
+    "--registry",
+    registry,
+    "--json",
+  ]);
 
   assert.equal(result.status, 0);
   assert.deepEqual(jsonOutput(result), {
@@ -154,11 +167,37 @@ test("--ttl accepts the DNS wire range and rejects ambiguous values", async () =
   }
 });
 
+test("--timeout accepts safe positive milliseconds and rejects timer overflow", async () => {
+  assert.equal(parseTimeout("1"), 1);
+  assert.equal(parseTimeout("4000"), 4000);
+  assert.equal(parseTimeout("2147483647"), 0x7fffffff);
+
+  for (const value of [undefined, "0", "-1", "1.5", "1e3", "2147483648", "nope"]) {
+    assert.throws(() => parseTimeout(value), /--timeout must be an integer from 1 to 2147483647/);
+    const args = value === undefined ? ["tlds", "--timeout"] : ["tlds", "--timeout", value];
+    const result = await run(args);
+    assert.equal(result.status, 1, String(value));
+    assert.equal(result.stderr, "", String(value));
+    assert.equal(
+      result.stdout,
+      "--timeout must be an integer from 1 to 2147483647\n",
+      String(value),
+    );
+  }
+});
+
 test("service install records the selected TTL", async () => {
   const result = await run(["service", "install", "--ttl", "86400", "--dry-run"]);
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /"?--ttl"?\s+"?86400"?/);
+});
+
+test("service install records the selected registry timeout", async () => {
+  const result = await run(["service", "--timeout", "1500", "install", "--dry-run"]);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /"?--timeout"?\s+"?1500"?/);
 });
 
 test("buildResolutionReport describes a parked DNS answer", () => {

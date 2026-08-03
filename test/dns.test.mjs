@@ -29,6 +29,30 @@ function query(name, { id = 0x1234, type = 1, cls = 1, rd = true } = {}) {
 
 const okJson = (body) => async () => ({ ok: true, json: async () => body });
 
+function rejectWhenAborted(_url, { signal }) {
+  return new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => {
+      const error = new Error("request aborted");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  });
+}
+
+function stallBodyUntilAborted(_url, { signal }) {
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("response body aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }),
+  });
+}
+
 test("names round-trip through the wire codec", () => {
   const buf = encodeName("california.oranges");
   assert.deepEqual(decodeName(buf, 0), { name: "california.oranges", offset: buf.length });
@@ -126,6 +150,22 @@ test("an unreachable registry is not mistaken for a parked name", async () => {
   assert.equal(r.status, "unreachable");
 });
 
+test("resolveName aborts a registry request at the selected deadline", async () => {
+  const result = await resolveName("a.eggs", {
+    fetchImpl: rejectWhenAborted,
+    timeoutMs: 10,
+  });
+  assert.deepEqual(result, { status: "unreachable", target: null });
+});
+
+test("resolveName keeps its deadline active while reading the response body", async () => {
+  const result = await resolveName("a.eggs", {
+    fetchImpl: stallBodyUntilAborted,
+    timeoutMs: 10,
+  });
+  assert.deepEqual(result, { status: "unreachable", target: null });
+});
+
 test("answerFor sends parked names to the parking address", async () => {
   const opts = { parkingAddress: "198.51.100.9", fetchImpl: okJson({ name_registered: true, target: null }) };
   assert.equal(await answerFor("california.oranges", opts), "198.51.100.9");
@@ -146,6 +186,20 @@ test("fetchTlds reads the Pit's TLD list", async () => {
     fetchImpl: okJson({ tlds: [{ tld: "Install" }, { tld: "agent" }, "eggs"] }),
   });
   assert.deepEqual(tlds, ["agent", "eggs", "install"]);
+});
+
+test("fetchTlds aborts a registry request at the selected deadline", async () => {
+  await assert.rejects(
+    fetchTlds({ fetchImpl: rejectWhenAborted, timeoutMs: 10 }),
+    { name: "AbortError" },
+  );
+});
+
+test("fetchTlds keeps its deadline active while reading the response body", async () => {
+  await assert.rejects(
+    fetchTlds({ fetchImpl: stallBodyUntilAborted, timeoutMs: 10 }),
+    { name: "AbortError" },
+  );
 });
 
 test("resolver config routes only the claimed TLDs", () => {

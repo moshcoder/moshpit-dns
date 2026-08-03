@@ -80,6 +80,19 @@ sudo moshpit-dns enable --ttl 300
 moshpit-dns service install --ttl 300
 ```
 
+Registry requests time out after 4000 milliseconds by default so an unavailable
+endpoint cannot leave DNS queries hanging indefinitely. Pass `--timeout N` to
+choose a positive whole-number deadline in milliseconds. The value is carried
+into detached bridges and persistent service definitions as well as foreground
+commands.
+
+```sh
+moshpit-dns resolve california.oranges --timeout 1500
+moshpit-dns start --timeout 1500
+sudo moshpit-dns enable --timeout 1500
+moshpit-dns service install --timeout 1500
+```
+
 ## What needs root, and what does not
 
 Only `enable`, `disable` and `refresh` — the acts that edit system DNS. The

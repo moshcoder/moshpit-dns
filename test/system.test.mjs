@@ -132,6 +132,7 @@ test("the detached bridge receives the selected TTL", async (t) => {
   const result = await startDaemon({
     port: 5354,
     ttl: 86400,
+    timeoutMs: 1500,
     registryBase: "https://my.pit",
     path,
     entry: "/opt/moshpit-dns/bin/moshpit-dns.mjs",
@@ -151,6 +152,8 @@ test("the detached bridge receives the selected TTL", async (t) => {
     "5354",
     "--ttl",
     "86400",
+    "--timeout",
+    "1500",
     "--registry",
     "https://my.pit",
   ]);
