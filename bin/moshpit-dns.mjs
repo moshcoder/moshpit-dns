@@ -37,7 +37,7 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   moshpit-dns service uninstall stop doing that
 
   moshpit-dns tlds [--json]     list the endings claimed in the Pit
-  moshpit-dns records <name> [CNAME|MX|TXT] [--json]
+  moshpit-dns records <name> [AAAA|CNAME|MX|TXT] [--json]
                                inspect records published for a name
   moshpit-dns resolve <name...> [--json]
                                show what names resolve to, and why
@@ -58,7 +58,7 @@ so every other name keeps using your normal resolver.`;
 
 const MAX_TTL = 0xffffffff;
 const MAX_TIMEOUT_MS = 0x7fffffff;
-const PUBLISHED_RECORD_TYPES = new Set(["CNAME", "MX", "TXT"]);
+const PUBLISHED_RECORD_TYPES = new Set(["AAAA", "CNAME", "MX", "TXT"]);
 
 /** Parse a DNS TTL without accepting fractions, signs, or numeric shorthand. */
 export function parseTtl(value) {
@@ -322,7 +322,7 @@ export async function run(argv = process.argv.slice(2)) {
           error: "missing name",
         });
       }
-      else out("usage: moshpit-dns records <name> [CNAME|MX|TXT]");
+      else out("usage: moshpit-dns records <name> [AAAA|CNAME|MX|TXT]");
       return 1;
     }
     if (type && !PUBLISHED_RECORD_TYPES.has(type)) {
@@ -339,7 +339,7 @@ export async function run(argv = process.argv.slice(2)) {
           error: "unsupported record type",
         });
       }
-      else out(`unsupported record type: ${requestedType} (expected CNAME, MX, or TXT)`);
+      else out(`unsupported record type: ${requestedType} (expected AAAA, CNAME, MX, or TXT)`);
       return 1;
     }
 

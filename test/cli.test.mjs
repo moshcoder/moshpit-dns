@@ -78,6 +78,30 @@ async function startRegistry(t, onRequest = () => {}) {
       response.end(JSON.stringify({ name_registered: false, target: null, records: [] }));
       return;
     }
+    if (request.url === "/api/moshpit/resolve?name=deep.blue.eggs") {
+      response.end(JSON.stringify({ name_registered: true, target: "203.0.113.10" }));
+      return;
+    }
+    if (request.url === "/api/moshpit/resolve?name=www.blue.eggs&records=1") {
+      response.end(JSON.stringify({ name_registered: false, target: null, records: [] }));
+      return;
+    }
+    if (request.url === "/api/moshpit/resolve?name=*.blue.eggs&records=1") {
+      response.end(JSON.stringify({
+        name_registered: true,
+        target: null,
+        records: [
+          { type: "AAAA", value: "2001:db8::10", priority: null, ttl: 300 },
+          { type: "TXT", value: "wildcard", priority: null, ttl: 60 },
+        ],
+      }));
+      return;
+    }
+    if (request.url === "/api/moshpit/resolve?name=nobody.red.eggs"
+      || request.url === "/api/moshpit/resolve?name=*.red.eggs") {
+      response.end(JSON.stringify({ name_registered: false, target: null }));
+      return;
+    }
     if (request.url === "/api/moshpit/resolve?name=empty.eggs"
       || request.url === "/api/moshpit/resolve?name=empty.eggs&records=1") {
       response.end(JSON.stringify({ name_registered: true, target: null, records: [] }));
@@ -299,6 +323,52 @@ test("records rejects unsupported types before contacting the registry", async (
     records: [],
     error: "unsupported record type",
   });
+});
+
+test("records follows a third-level name to its wildcard", async (t) => {
+  const asked = [];
+  const registry = await startRegistry(t, (request) => {
+    if (request.url.startsWith("/api/moshpit/resolve")) asked.push(request.url);
+  });
+
+  const human = await run(["records", "www.blue.eggs", "--registry", registry]);
+  assert.equal(human.status, 0);
+  assert.equal(human.stderr, "");
+  assert.equal(human.stdout, "AAAA 2001:db8::10 (TTL 300)\nTXT wildcard (TTL 60)\n");
+  assert.deepEqual(asked, [
+    // The name as-is first, then the literal wildcard when that missed.
+    "/api/moshpit/resolve?name=www.blue.eggs&records=1",
+    "/api/moshpit/resolve?name=*.blue.eggs&records=1",
+  ]);
+
+  const wild = await run(["records", "*.blue.eggs", "--registry", registry, "--json"]);
+  assert.equal(wild.status, 0);
+  assert.equal(jsonOutput(wild).count, 2);
+});
+
+test("records accepts AAAA as a published type", async (t) => {
+  const registry = await startRegistry(t);
+  const result = await run(["records", "*.blue.eggs", "aaaa", "--registry", registry, "--json"]);
+
+  assert.equal(result.status, 0);
+  assert.deepEqual(jsonOutput(result).records, [
+    { type: "AAAA", value: "2001:db8::10", priority: null, ttl: 300 },
+  ]);
+});
+
+test("resolve accepts third-level names and reports a wildcard miss", async (t) => {
+  const registry = await startRegistry(t);
+
+  const deep = await run(["resolve", "deep.blue.eggs", "--registry", registry, "--json"]);
+  assert.equal(deep.status, 0);
+  assert.equal(jsonOutput(deep).status, "live");
+  assert.equal(jsonOutput(deep).address, "203.0.113.10");
+
+  const missing = await run(["resolve", "nobody.red.eggs", "--registry", registry, "--json"]);
+  assert.equal(missing.status, 1);
+  assert.equal(jsonOutput(missing).status, "nxdomain");
+  assert.equal(jsonOutput(missing).reason,
+    "no such name — the registry holds neither it nor a wildcard for it");
 });
 
 test("records reports an empty published set in human mode", async (t) => {

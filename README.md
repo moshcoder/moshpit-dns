@@ -67,7 +67,7 @@ moshpit-dns service install   keep the bridge running across reboots
 moshpit-dns service uninstall stop doing that
 
 moshpit-dns tlds [--json]     list the endings claimed in the Pit
-moshpit-dns records <name> [CNAME|MX|TXT] [--json]
+moshpit-dns records <name> [AAAA|CNAME|MX|TXT] [--json]
                              inspect records published for a name
 moshpit-dns resolve <name...> [--json]
                              what names resolve to, and why
@@ -79,7 +79,7 @@ moshpit-dns install           print the resolver config without applying it
 This edits system DNS under sudo, so being inspectable first is the point.
 
 `tlds`, `records`, `resolve`, and `status` accept `--json` for scripts and
-monitoring. The JSON includes registry reachability, published CNAME/MX/TXT
+monitoring. The JSON includes registry reachability, published AAAA/CNAME/MX/TXT
 records, the final DNS address for a resolution, and structured status warnings
 without mixing human-readable lines into stdout.
 Failures such as an unreachable registry still produce valid JSON and a
@@ -88,6 +88,10 @@ For compatibility, resolving one name returns the established JSON object.
 Resolving multiple names returns an ordered array and exits non-zero when any
 name is invalid or the registry cannot answer it. Repeated names share one
 registry lookup while still retaining their original positions in the output.
+
+`records` and `resolve` take third-level and wildcard names as well:
+`moshpit-dns records '*.chovy.hacker'` inspects what an owner published for
+everything under their name, and `foo.chovy.hacker` resolves through it.
 
 ```sh
 moshpit-dns resolve california.oranges --json | jq .address
