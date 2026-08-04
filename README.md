@@ -61,8 +61,8 @@ moshpit-dns service uninstall stop doing that
 moshpit-dns tlds [--json]     list the endings claimed in the Pit
 moshpit-dns records <name> [CNAME|MX|TXT] [--json]
                              inspect records published for a name
-moshpit-dns resolve <name> [--json]
-                             what a name resolves to, and why
+moshpit-dns resolve <name...> [--json]
+                             what names resolve to, and why
 moshpit-dns start [--ttl N]   run the bridge in the foreground
 moshpit-dns install           print the resolver config without applying it
 ```
@@ -76,9 +76,14 @@ records, the final DNS address for a resolution, and structured status warnings
 without mixing human-readable lines into stdout.
 Failures such as an unreachable registry still produce valid JSON and a
 non-zero exit status where the command normally fails.
+For compatibility, resolving one name returns the established JSON object.
+Resolving multiple names returns an ordered array and exits non-zero when any
+name is invalid or the registry cannot answer it. Repeated names share one
+registry lookup while still retaining their original positions in the output.
 
 ```sh
 moshpit-dns resolve california.oranges --json | jq .address
+moshpit-dns resolve california.oranges blue.eggs --json | jq '.[].address'
 moshpit-dns records california.oranges MX --json | jq '.records[]'
 moshpit-dns status --json | jq '.warnings[]?.code'
 ```

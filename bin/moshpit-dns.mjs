@@ -39,8 +39,8 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   moshpit-dns tlds [--json]     list the endings claimed in the Pit
   moshpit-dns records <name> [CNAME|MX|TXT] [--json]
                                inspect records published for a name
-  moshpit-dns resolve <name> [--json]
-                               show what a name resolves to, and why
+  moshpit-dns resolve <name...> [--json]
+                               show what names resolve to, and why
   moshpit-dns start             run the bridge in the foreground
   moshpit-dns install           print the resolver config without applying it
 
@@ -366,27 +366,44 @@ export async function run(argv = process.argv.slice(2)) {
   }
 
   if (sub === "resolve") {
-    const name = positionals()[0];
-    if (!name) {
+    const names = positionals();
+    if (!names[0]) {
       if (json) outJson({ name: null, error: "missing name" });
       else out("usage: moshpit-dns resolve <name>");
       return 1;
     }
-    const result = await resolveName(name, { registryBase, timeoutMs });
-    const park = result.status === "parked" ? await parkingAddress() : null;
-    const address = result.status === "live" ? result.target : park;
-    const report = buildResolutionReport(name, result, address, registryBase);
-    if (json) {
-      outJson(report);
-    } else {
-      out({
-        live: () => `${name} → ${result.target}`,
-        parked: () => `${name} → ${park || "(parking host unresolvable)"}  [${report.reason}]`,
-        unreachable: () => `${name} → NXDOMAIN  [${report.reason}]`,
-        "not-a-name": () => `${name} → NXDOMAIN  [${report.reason}]`,
-      }[result.status]());
+
+    const lookups = new Map();
+    let parkingLookup;
+    const reports = [];
+    for (const name of names) {
+      let lookup = lookups.get(name);
+      if (!lookup) {
+        lookup = resolveName(name, { registryBase, timeoutMs });
+        lookups.set(name, lookup);
+      }
+      const result = await lookup;
+      if (result.status === "parked" && !parkingLookup) parkingLookup = parkingAddress();
+      const park = result.status === "parked" ? await parkingLookup : null;
+      const address = result.status === "live" ? result.target : park;
+      const report = buildResolutionReport(name, result, address, registryBase);
+      reports.push({ name, result, park, report });
     }
-    return result.status === "live" || result.status === "parked" ? 0 : 1;
+    if (json) {
+      outJson(reports.length === 1 ? reports[0].report : reports.map(({ report }) => report));
+    } else {
+      for (const { name, result, park, report } of reports) {
+        out({
+          live: () => `${name} → ${result.target}`,
+          parked: () => `${name} → ${park || "(parking host unresolvable)"}  [${report.reason}]`,
+          unreachable: () => `${name} → NXDOMAIN  [${report.reason}]`,
+          "not-a-name": () => `${name} → NXDOMAIN  [${report.reason}]`,
+        }[result.status]());
+      }
+    }
+    return reports.every(({ result }) => result.status === "live" || result.status === "parked")
+      ? 0
+      : 1;
   }
 
   if (sub === "start") {
