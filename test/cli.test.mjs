@@ -78,7 +78,8 @@ async function startRegistry(t, onRequest = () => {}) {
       response.end(JSON.stringify({ name_registered: false, target: null, records: [] }));
       return;
     }
-    if (request.url === "/api/moshpit/resolve?name=empty.eggs&records=1") {
+    if (request.url === "/api/moshpit/resolve?name=empty.eggs"
+      || request.url === "/api/moshpit/resolve?name=empty.eggs&records=1") {
       response.end(JSON.stringify({ name_registered: true, target: null, records: [] }));
       return;
     }
@@ -138,6 +139,113 @@ test("resolve --json reports the address and decision reason", async (t) => {
     registered: null,
     reason: "registry target",
   });
+});
+
+test("resolve reports multiple names in input order", async (t) => {
+  let requests = 0;
+  const registry = await startRegistry(t, (request) => {
+    if (request.url.startsWith("/api/moshpit/resolve")) requests += 1;
+  });
+  const result = await run([
+    "resolve",
+    "--timeout",
+    "1500",
+    "blue.eggs",
+    "--registry",
+    registry,
+    "localhost",
+    "blue.eggs",
+    "--json",
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.equal(requests, 1);
+  assert.deepEqual(jsonOutput(result), [
+    {
+      registry,
+      name: "blue.eggs",
+      status: "live",
+      address: "203.0.113.9",
+      target: "203.0.113.9",
+      registered: null,
+      reason: "registry target",
+    },
+    {
+      registry,
+      name: "localhost",
+      status: "not-a-name",
+      address: null,
+      target: null,
+      registered: null,
+      reason: "not a Moshpit name: one label and one ending",
+    },
+    {
+      registry,
+      name: "blue.eggs",
+      status: "live",
+      address: "203.0.113.9",
+      target: "203.0.113.9",
+      registered: null,
+      reason: "registry target",
+    },
+  ]);
+
+  const human = await run([
+    "resolve",
+    "blue.eggs",
+    "localhost",
+    "--registry",
+    registry,
+  ]);
+  assert.equal(human.status, 1);
+  assert.equal(human.stderr, "");
+  assert.equal(
+    human.stdout,
+    "blue.eggs → 203.0.113.9\n"
+      + "localhost → NXDOMAIN  [not a Moshpit name: one label and one ending]\n",
+  );
+});
+
+test("resolve returns success when every batch entry resolves", async (t) => {
+  const registry = await startRegistry(t);
+  const result = await run([
+    "resolve",
+    "blue.eggs",
+    "blue.eggs",
+    "--registry",
+    registry,
+    "--json",
+  ]);
+
+  assert.equal(result.status, 0);
+  const reports = jsonOutput(result);
+  assert.equal(reports.length, 2);
+  assert.deepEqual(reports[0], reports[1]);
+});
+
+test("resolve reuses lookups for repeated parked names", async (t) => {
+  let requests = 0;
+  const registry = await startRegistry(t, (request) => {
+    if (request.url === "/api/moshpit/resolve?name=empty.eggs") requests += 1;
+  });
+  const result = await run([
+    "resolve",
+    "empty.eggs",
+    "empty.eggs",
+    "--registry",
+    registry,
+    "--json",
+  ]);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests, 1);
+  const reports = jsonOutput(result);
+  assert.equal(reports.length, 2);
+  assert.equal(reports[0].status, "parked");
+  assert.equal(reports[0].target, null);
+  assert.equal(reports[0].registered, true);
+  assert.equal(reports[0].reason, "claimed, not pointed at an IP");
+  assert.deepEqual(reports[0], reports[1]);
 });
 
 test("records inspects and filters the registry record set", async (t) => {
@@ -309,6 +417,10 @@ test("resolve --json keeps malformed and missing names machine-readable", async 
   const missing = await run(["resolve", "--json"]);
   assert.equal(missing.status, 1);
   assert.deepEqual(jsonOutput(missing), { name: null, error: "missing name" });
+
+  const empty = await run(["resolve", "", "--json"]);
+  assert.equal(empty.status, 1);
+  assert.deepEqual(jsonOutput(empty), { name: null, error: "missing name" });
 });
 
 test("tlds --json returns valid JSON when the registry is unreachable", async () => {
