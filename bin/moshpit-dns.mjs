@@ -142,6 +142,7 @@ const resolutionReasons = {
   parked: "claimed, not pointed at an IP",
   unreachable: "registry unreachable — not parking a name we could not look up",
   "not-a-name": "not a Moshpit name: one label and one ending",
+  nxdomain: "no such name — the registry holds neither it nor a wildcard for it",
 };
 
 function normalizePublishedRecord(record) {
@@ -398,6 +399,7 @@ export async function run(argv = process.argv.slice(2)) {
           parked: () => `${name} → ${park || "(parking host unresolvable)"}  [${report.reason}]`,
           unreachable: () => `${name} → NXDOMAIN  [${report.reason}]`,
           "not-a-name": () => `${name} → NXDOMAIN  [${report.reason}]`,
+          nxdomain: () => `${name} → NXDOMAIN  [${report.reason}]`,
         }[result.status]());
       }
     }

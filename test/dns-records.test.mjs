@@ -224,10 +224,10 @@ test("an unregistered name under a claimed ending is parked, not denied", async 
 });
 
 test("a record question about something that is not a name at all is NXDOMAIN", async (t) => {
-  // Three labels cannot be a Moshpit name — the namespace is one level deep —
-  // so there is nothing here to be waiting to be pointed.
+  // Four labels cannot be a Moshpit name — the namespace is two levels deep at
+  // most — so there is nothing here to be waiting to be pointed.
   const server = await serve(t, registry({ records: [] }));
-  const reply = await ask(server, query("not.a.name", { type: TYPE_TXT }));
+  const reply = await ask(server, query("not.a.real.name", { type: TYPE_TXT }));
   assert.equal(rcode(reply), RCODE_NXDOMAIN);
 });
 
@@ -281,9 +281,86 @@ test("answerRecords separates 'no such record' from 'no such name'", async () =>
 
   // Not a name this registry can be asked about at all.
   const reg = registry({ records: [] });
-  assert.deepEqual(await answerRecords("not.a.name", { fetchImpl: reg.fetchImpl, type: "MX" }),
+  assert.deepEqual(await answerRecords("not.a.real.name", { fetchImpl: reg.fetchImpl, type: "MX" }),
     { exists: false, records: [] });
   assert.equal(reg.calls.length, 0, "a name it could reject on sight still cost a round trip");
+});
+
+test("a third-level name is answered from the wildcard its parent published", async () => {
+  // `www.blue.eggs` itself is not in the registry; `*.blue.eggs` is, and the
+  // fallback finds it when the direct question misses.
+  const fetchImpl = async (url) => {
+    const name = new URL(url).searchParams.get("name");
+    const wants = url.includes("records=1");
+    return {
+      ok: true,
+      json: async () => (name === "*.blue.eggs"
+        ? {
+          name_registered: true,
+          target: null,
+          ...(wants ? { records: [{ type: "TXT", value: "wild", ttl: 60, priority: null }] } : {}),
+        }
+        : { name_registered: false, target: null, ...(wants ? { records: [] } : {}) }),
+    };
+  };
+  assert.deepEqual(await answerRecords("www.blue.eggs", { fetchImpl, type: "TXT" }),
+    { exists: true, records: [{ type: "TXT", value: "wild", ttl: 60, priority: null }] });
+});
+
+test("a third-level name missing everywhere is NXDOMAIN", async (t) => {
+  const server = await serve(t, registry({ records: [], registered: false }));
+  const reply = await ask(server, query("nobody.blue.eggs", { type: TYPE_TXT }));
+  assert.equal(rcode(reply), RCODE_NXDOMAIN);
+});
+
+test("a wildcard's records answer under the name that was asked", async (t) => {
+  // Standard wildcard semantics: the owner field carries the asked name, not
+  // the wildcard the records came from.
+  const fetchImpl = async (url) => {
+    const name = new URL(url).searchParams.get("name");
+    const wants = url.includes("records=1");
+    return {
+      ok: true,
+      json: async () => (name === "*.blue.eggs"
+        ? {
+          name_registered: true,
+          target: null,
+          ...(wants ? { records: [{ type: "MX", value: "mx.example.com", ttl: 300, priority: 10 }] } : {}),
+        }
+        : { name_registered: false, target: null, ...(wants ? { records: [] } : {}) }),
+    };
+  };
+  const server = await serve(t, { fetchImpl });
+  const reply = await ask(server, query("mail.blue.eggs", { type: TYPE_MX }));
+
+  assert.equal(rcode(reply), RCODE_OK);
+  assert.equal(count(reply), 1);
+  const [answer] = readAnswers(reply, "mail.blue.eggs");
+  assert.equal(answer.value, "mx.example.com");
+});
+
+test("an exact third-level answer wins over the wildcard", async (t) => {
+  // The registry is asked for the name as-is first; the fallback runs only
+  // when that yields nothing.
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(new URL(url).searchParams.get("name"));
+    const wants = url.includes("records=1");
+    return {
+      ok: true,
+      json: async () => ({
+        name_registered: true,
+        target: null,
+        ...(wants ? { records: [{ type: "TXT", value: "exact", ttl: 60, priority: null }] } : {}),
+      }),
+    };
+  };
+  const server = await serve(t, { fetchImpl });
+  const reply = await ask(server, query("www.blue.eggs", { type: TYPE_TXT }));
+
+  assert.equal(rcode(reply), RCODE_OK);
+  assert.equal(readAnswers(reply, "www.blue.eggs")[0].value, "exact");
+  assert.ok(calls.every((name) => name === "www.blue.eggs"), "the wildcard was never asked");
 });
 
 test("answerRecords asks the registry for the record set exactly once", async () => {

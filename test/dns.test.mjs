@@ -104,9 +104,18 @@ test("buildResponse says NXDOMAIN when there is no address", () => {
 
 test("only registry-shaped names are ours to answer", () => {
   assert.deepEqual(parseRegistryName("california.oranges"), { label: "california", tld: "oranges" });
-  assert.equal(parseRegistryName("a.b.c"), null);
+  assert.deepEqual(parseRegistryName("www.california.oranges"),
+    { sub: "www", label: "california", tld: "oranges" });
+  assert.equal(parseRegistryName("a.b.c.d"), null);
   assert.equal(parseRegistryName("localhost"), null);
   assert.equal(parseRegistryName("127.0.0.1"), null);
+});
+
+test("a wildcard is a whole leftmost label or not a name at all", () => {
+  assert.deepEqual(parseRegistryName("*.chovy.hacker"), { sub: "*", label: "chovy", tld: "hacker" });
+  assert.equal(parseRegistryName("*.hacker"), null, "a wildcard needs its parent's name");
+  assert.equal(parseRegistryName("foo.*.hacker"), null, "a wildcard is not a middle label");
+  assert.equal(parseRegistryName("f*.chovy.hacker"), null, "a partial wildcard matches nothing");
 });
 
 test("a pointed name resolves to its target", async () => {
@@ -139,6 +148,52 @@ test("name_registered wins over the TLD-level registered flag", async () => {
   });
   assert.equal(r.status, "parked");
   assert.equal(r.registered, false);
+});
+
+/** A registry that knows only the names it is handed, wildcard included. */
+function byName(answers) {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(new URL(url).searchParams.get("name"));
+    const wants = url.includes("records=1");
+    const { records = [], ...found } = answers[calls[calls.length - 1]]
+      || { name_registered: false, target: null };
+    return { ok: true, json: async () => ({ ...found, ...(wants ? { records } : {}) }) };
+  };
+  return { fetchImpl, calls };
+}
+
+test("a third-level miss falls back to the literal wildcard name", async () => {
+  // A registry old enough not to do the wildcard match itself still knows the
+  // wildcard as a name of its own.
+  const reg = byName({ "*.chovy.hacker": { name_registered: true, target: null } });
+  const r = await resolveName("foo.chovy.hacker", { fetchImpl: reg.fetchImpl });
+  assert.equal(r.status, "parked");
+  assert.deepEqual(reg.calls, ["foo.chovy.hacker", "*.chovy.hacker"]);
+});
+
+test("a name the registry answers directly never pays for the fallback", async () => {
+  const reg = byName({ "foo.chovy.hacker": { name_registered: true, target: "203.0.113.7" } });
+  const r = await resolveName("foo.chovy.hacker", { fetchImpl: reg.fetchImpl });
+  assert.equal(r.status, "live");
+  assert.deepEqual(reg.calls, ["foo.chovy.hacker"]);
+});
+
+test("a third-level name missing everywhere is NXDOMAIN, not parked", async () => {
+  // Parking is for a bare label waiting under its claimed ending; a sub-name
+  // has nothing to wait on once the wildcard misses too.
+  const reg = byName({});
+  assert.deepEqual(await resolveName("foo.chovy.hacker", { fetchImpl: reg.fetchImpl }),
+    { status: "nxdomain", target: null });
+  assert.deepEqual(await resolveName("foo.chovy.hacker", { fetchImpl: byName({}).fetchImpl, records: true }),
+    { status: "nxdomain", target: null, records: [] });
+});
+
+test("the wildcard asked by name gets no fallback of its own", async () => {
+  // `*.chovy.hacker` IS the fallback — asking it again would loop.
+  const reg = byName({});
+  assert.equal((await resolveName("*.chovy.hacker", { fetchImpl: reg.fetchImpl })).status, "nxdomain");
+  assert.deepEqual(reg.calls, ["*.chovy.hacker"]);
 });
 
 test("an unreachable registry is not mistaken for a parked name", async () => {

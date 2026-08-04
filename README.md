@@ -32,6 +32,14 @@ A name pointed at a hostname rather than an address answers with the `CNAME` it
 published, for the client to chase through its own resolver. This bridge never
 does clearnet DNS itself.
 
+Names also answer one level down. An owner who publishes records for
+`*.chovy.hacker` covers everything under their name: a question for
+`foo.chovy.hacker` is asked of the registry as-is, the wildcard is tried as a
+literal name when that misses, and the answer comes back owned by the name that
+was asked — standard wildcard semantics. A sub-name missing from both is
+NXDOMAIN rather than parked: parking sells the bare label, and there is nothing
+to park a sub-name to.
+
 ## One suffix, not your whole resolver
 
 Each OS has a way to send *one suffix* to a different nameserver without

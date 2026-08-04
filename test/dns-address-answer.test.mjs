@@ -175,6 +175,68 @@ test("a name with only an AAAA record still exists to the A question", async (t)
   assert.equal(rcode(reply), RCODE_OK, "the name is here, it just has no A");
 });
 
+test("a third-level name answers AAAA from the wildcard's published records", async (t) => {
+  // `www.scrambled.eggs` is not in the registry; `*.scrambled.eggs` is, with an
+  // AAAA record and no target. A bare label would park here — a sub-name is
+  // never for sale, so the wildcard's records are the answer, owned on the
+  // wire by the name that was asked.
+  const fetchImpl = async (url) => {
+    const name = new URL(url).searchParams.get("name");
+    const wants = url.includes("records=1");
+    return {
+      ok: true,
+      json: async () => (name === "*.scrambled.eggs"
+        ? {
+          name_registered: true,
+          target: null,
+          ...(wants ? { records: [{ type: "AAAA", value: "2606:4700::1111", ttl: 300 }] } : {}),
+        }
+        : { name_registered: false, target: null, ...(wants ? { records: [] } : {}) }),
+    };
+  };
+  const server = await serve(t, { fetchImpl });
+  const reply = await ask(server, query("www.scrambled.eggs", { type: TYPE_AAAA }));
+
+  assert.equal(rcode(reply), RCODE_OK);
+  const [record] = readAnswers(reply, "www.scrambled.eggs");
+  assert.equal(record.owner, "www.scrambled.eggs", "answered under the asked name, not the wildcard");
+  assert.equal(record.type, TYPE_AAAA);
+  assert.equal(record.ttl, 300, "the owner's TTL, not the bridge's default");
+  assert.equal(record.rdata.readUInt16BE(0), 0x2606);
+});
+
+test("a wildcard CNAME answers an address question like an exact one", async (t) => {
+  const fetchImpl = async (url) => {
+    const name = new URL(url).searchParams.get("name");
+    const wants = url.includes("records=1");
+    return {
+      ok: true,
+      json: async () => (name === "*.scrambled.eggs"
+        ? {
+          name_registered: true,
+          target: null,
+          ...(wants ? { records: [{ type: "CNAME", value: "box.example.com", ttl: 300, priority: null }] } : {}),
+        }
+        : { name_registered: false, target: null, ...(wants ? { records: [] } : {}) }),
+    };
+  };
+  const server = await serve(t, { fetchImpl });
+  const reply = await ask(server, query("www.scrambled.eggs"));
+
+  assert.equal(rcode(reply), RCODE_OK);
+  const [record] = readAnswers(reply, "www.scrambled.eggs");
+  assert.equal(record.owner, "www.scrambled.eggs");
+  assert.equal(record.type, TYPE_CNAME);
+  assert.equal(readName(record.rdata, 0).name, "box.example.com");
+});
+
+test("a third-level name missing everywhere is NXDOMAIN, not parked", async (t) => {
+  // Parking sells the bare label; there is nothing to park a sub-name to once
+  // the wildcard misses too.
+  const server = await serve(t, registry({ target: null, registered: false }));
+  assert.equal(rcode(await ask(server, query("nobody.scrambled.eggs"))), RCODE_NXDOMAIN);
+});
+
 /* ------------------------------------------------------- a target that is a host */
 
 test("a hostname target is answered as a CNAME to that host", async (t) => {
