@@ -39,7 +39,7 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   moshpit-dns tlds [--json]     list the endings claimed in the Pit
   moshpit-dns records <name> [AAAA|CNAME|MX|TXT] [--json]
                                inspect records published for a name
-  moshpit-dns resolve <name...> [--json]
+  moshpit-dns resolve <name...> [--concurrency N] [--json]
                                show what names resolve to, and why
   moshpit-dns start             run the bridge in the foreground
   moshpit-dns install           print the resolver config without applying it
@@ -50,6 +50,7 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   --port N    the bridge's port (Windows must use 53 — NRPT carries no port)
   --ttl N     DNS answer lifetime in seconds (default: ${DEFAULT_TTL})
   --timeout N registry request deadline in milliseconds (default: ${DEFAULT_TIMEOUT_MS})
+  --concurrency N maximum simultaneous resolve lookups (default: 8)
 
 The registry speaks HTTP, not DNS, so nothing outside a browser can reach a
 Moshpit name until this bridge is running and your resolver points at it.
@@ -58,6 +59,7 @@ so every other name keeps using your normal resolver.`;
 
 const MAX_TTL = 0xffffffff;
 const MAX_TIMEOUT_MS = 0x7fffffff;
+const DEFAULT_CONCURRENCY = 8;
 const PUBLISHED_RECORD_TYPES = new Set(["AAAA", "CNAME", "MX", "TXT"]);
 
 /** Parse a DNS TTL without accepting fractions, signs, or numeric shorthand. */
@@ -86,9 +88,25 @@ export function parseTimeout(value) {
   return parsed;
 }
 
-const VALUE_FLAGS = new Set(["--backend", "--port", "--registry", "--timeout", "--ttl"]);
+/** Parse a batch bound without accepting zero, fractions, or unsafe integers. */
+export function parseConcurrency(value) {
+  const text = String(value ?? "");
+  if (!/^\d+$/.test(text)) {
+    throw new RangeError("--concurrency must be a positive integer");
+  }
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new RangeError("--concurrency must be a positive integer");
+  }
+  return parsed;
+}
 
-let sub, rest, flag, has, positionals, registryBase, port, ttl, ttlError, timeoutMs, timeoutError;
+const VALUE_FLAGS = new Set([
+  "--backend", "--port", "--registry", "--timeout", "--ttl", "--concurrency",
+]);
+
+let sub, rest, flag, has, positionals, registryBase, port, ttl, ttlError;
+let timeoutMs, timeoutError, concurrency, concurrencyError;
 const setup = (argv) => {
   [sub, ...rest] = argv;
   flag = (name, fallback) => {
@@ -124,6 +142,16 @@ const setup = (argv) => {
   } catch (error) {
     timeoutMs = DEFAULT_TIMEOUT_MS;
     timeoutError = error.message;
+  }
+  const concurrencyIndex = rest.indexOf("--concurrency");
+  try {
+    concurrency = concurrencyIndex === -1
+      ? DEFAULT_CONCURRENCY
+      : parseConcurrency(rest[concurrencyIndex + 1]);
+    concurrencyError = null;
+  } catch (error) {
+    concurrency = DEFAULT_CONCURRENCY;
+    concurrencyError = error.message;
   }
 };
 const out = console.log;
@@ -258,6 +286,25 @@ export function buildStatusReport({
   };
 }
 
+/** Map a batch without allowing it to overwhelm the registry. */
+export async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker(),
+  ));
+  return results;
+}
+
 /**
  * The whole command, as a function.
  *
@@ -272,6 +319,7 @@ export async function run(argv = process.argv.slice(2)) {
   if (!sub || sub === "help" || sub === "--help") { out(USAGE); return 0; }
   if (ttlError) { out(ttlError); return 1; }
   if (timeoutError) { out(timeoutError); return 1; }
+  if (concurrencyError) { out(concurrencyError); return 1; }
 
   if (sub === "tlds") {
     try {
@@ -376,20 +424,22 @@ export async function run(argv = process.argv.slice(2)) {
 
     const lookups = new Map();
     let parkingLookup;
-    const reports = [];
-    for (const name of names) {
+    const resolveOne = async (name) => {
       let lookup = lookups.get(name);
       if (!lookup) {
         lookup = resolveName(name, { registryBase, timeoutMs });
         lookups.set(name, lookup);
       }
       const result = await lookup;
-      if (result.status === "parked" && !parkingLookup) parkingLookup = parkingAddress();
+      if (result.status === "parked" && !parkingLookup) {
+        parkingLookup = parkingAddress();
+      }
       const park = result.status === "parked" ? await parkingLookup : null;
       const address = result.status === "live" ? result.target : park;
       const report = buildResolutionReport(name, result, address, registryBase);
-      reports.push({ name, result, park, report });
-    }
+      return { name, result, park, report };
+    };
+    const reports = await mapWithConcurrency(names, concurrency, resolveOne);
     if (json) {
       outJson(reports.length === 1 ? reports[0].report : reports.map(({ report }) => report));
     } else {

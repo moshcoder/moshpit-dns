@@ -9,6 +9,8 @@ import {
   buildRecordsReport,
   buildResolutionReport,
   buildStatusReport,
+  mapWithConcurrency,
+  parseConcurrency,
   parseTimeout,
   parseTtl,
 } from "../bin/moshpit-dns.mjs";
@@ -270,6 +272,38 @@ test("resolve reuses lookups for repeated parked names", async (t) => {
   assert.equal(reports[0].registered, true);
   assert.equal(reports[0].reason, "claimed, not pointed at an IP");
   assert.deepEqual(reports[0], reports[1]);
+});
+
+test("batch mapping bounds concurrent work and preserves input order", async () => {
+  let active = 0;
+  let peak = 0;
+  const values = [40, 5, 20, 1];
+  const results = await mapWithConcurrency(values, 2, async (delay, index) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    active -= 1;
+    return `${index}:${delay}`;
+  });
+
+  assert.equal(peak, 2);
+  assert.deepEqual(results, ["0:40", "1:5", "2:20", "3:1"]);
+});
+
+test("--concurrency accepts positive integers and rejects ambiguous values", async () => {
+  assert.equal(parseConcurrency("1"), 1);
+  assert.equal(parseConcurrency("8"), 8);
+  assert.equal(parseConcurrency("9007199254740991"), Number.MAX_SAFE_INTEGER);
+
+  for (const value of [undefined, "0", "-1", "1.5", "1e3", "9007199254740992", "nope"]) {
+    assert.throws(() => parseConcurrency(value), /--concurrency must be a positive integer/);
+    const args = value === undefined ? ["resolve", "blue.eggs", "--concurrency"]
+      : ["resolve", "blue.eggs", "--concurrency", value];
+    const result = await run(args);
+    assert.equal(result.status, 1, String(value));
+    assert.equal(result.stderr, "", String(value));
+    assert.equal(result.stdout, "--concurrency must be a positive integer\n", String(value));
+  }
 });
 
 test("records inspects and filters the registry record set", async (t) => {
