@@ -37,8 +37,8 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   moshpit-dns service uninstall stop doing that
 
   moshpit-dns tlds [--json]     list the endings claimed in the Pit
-  moshpit-dns records <name> [AAAA|CNAME|MX|TXT] [--json]
-                               inspect records published for a name
+  moshpit-dns records <name...> [--type AAAA|CNAME|MX|TXT] [--json]
+                               inspect records published for names
   moshpit-dns resolve <name...> [--concurrency N] [--json]
                                show what names resolve to, and why
   moshpit-dns start             run the bridge in the foreground
@@ -51,6 +51,7 @@ const USAGE = `moshpit-dns — resolve Moshpit names on this machine
   --ttl N     DNS answer lifetime in seconds (default: ${DEFAULT_TTL})
   --timeout N registry request deadline in milliseconds (default: ${DEFAULT_TIMEOUT_MS})
   --concurrency N maximum simultaneous resolve lookups (default: 8)
+  --type TYPE filter published records to AAAA, CNAME, MX, or TXT
 
 The registry speaks HTTP, not DNS, so nothing outside a browser can reach a
 Moshpit name until this bridge is running and your resolver points at it.
@@ -102,7 +103,7 @@ export function parseConcurrency(value) {
 }
 
 const VALUE_FLAGS = new Set([
-  "--backend", "--port", "--registry", "--timeout", "--ttl", "--concurrency",
+  "--backend", "--port", "--registry", "--timeout", "--ttl", "--concurrency", "--type",
 ]);
 
 let sub, rest, flag, has, positionals, registryBase, port, ttl, ttlError;
@@ -118,7 +119,7 @@ const setup = (argv) => {
     const values = [];
     for (let i = 0; i < rest.length; i += 1) {
       if (VALUE_FLAGS.has(rest[i])) {
-        i += 1;
+        if (rest[i + 1] && !rest[i + 1].startsWith("--")) i += 1;
       } else if (!rest[i].startsWith("-")) {
         values.push(rest[i]);
       }
@@ -354,9 +355,22 @@ export async function run(argv = process.argv.slice(2)) {
   }
 
   if (sub === "records") {
-    const [name, requestedType] = positionals();
+    const values = positionals();
+    const hasTypeFlag = has("type");
+    const trailing = values.at(-1);
+    const legacyType = !hasTypeFlag
+      && values.length > 1
+      && (PUBLISHED_RECORD_TYPES.has(trailing.toUpperCase()) || !trailing.includes("."))
+      ? trailing
+      : null;
+    const names = legacyType ? values.slice(0, -1) : values;
+    const typeIndex = rest.indexOf("--type");
+    const typeValue = typeIndex >= 0 ? rest[typeIndex + 1] : null;
+    const requestedType = hasTypeFlag && typeValue && !typeValue.startsWith("--")
+      ? typeValue
+      : hasTypeFlag ? null : legacyType;
     const type = requestedType?.toUpperCase() || null;
-    if (!name) {
+    if (!names.length) {
       if (json) {
         outJson({
           registry: registryBase,
@@ -370,48 +384,80 @@ export async function run(argv = process.argv.slice(2)) {
           error: "missing name",
         });
       }
-      else out("usage: moshpit-dns records <name> [AAAA|CNAME|MX|TXT]");
+      else out("usage: moshpit-dns records <name...> [--type AAAA|CNAME|MX|TXT]");
       return 1;
     }
-    if (type && !PUBLISHED_RECORD_TYPES.has(type)) {
+    if ((hasTypeFlag && !requestedType) || (type && !PUBLISHED_RECORD_TYPES.has(type))) {
+      const reports = names.map((name) => ({
+        registry: registryBase,
+        name,
+        status: null,
+        exists: false,
+        registered: null,
+        type,
+        count: 0,
+        records: [],
+        error: "unsupported record type",
+      }));
       if (json) {
-        outJson({
-          registry: registryBase,
-          name,
-          status: null,
-          exists: false,
-          registered: null,
-          type,
-          count: 0,
-          records: [],
-          error: "unsupported record type",
-        });
+        outJson(reports.length === 1 ? reports[0] : reports);
       }
-      else out(`unsupported record type: ${requestedType} (expected AAAA, CNAME, MX, or TXT)`);
+      else out(`unsupported record type: ${requestedType ?? ""} (expected AAAA, CNAME, MX, or TXT)`);
       return 1;
     }
 
-    const result = await resolveName(name, { registryBase, timeoutMs, records: true });
-    const report = buildRecordsReport(name, result, type, registryBase);
+    const lookups = new Map();
+    const inspectOne = async (name) => {
+      let lookup = lookups.get(name);
+      if (!lookup) {
+        lookup = resolveName(name, { registryBase, timeoutMs, records: true });
+        lookups.set(name, lookup);
+      }
+      const result = await lookup;
+      return buildRecordsReport(name, result, type, registryBase);
+    };
+    const reports = await mapWithConcurrency(names, concurrency, inspectOne);
 
     if (json) {
-      outJson(report);
-    } else if (report.error) {
-      out(`${name}: ${report.error}`);
-    } else if (!report.exists) {
-      out(`${name}: name is not registered`);
-    } else if (!report.records.length) {
-      out(type ? `no ${type} records published for ${name}` : `no records published for ${name}`);
-    } else {
-      for (const record of report.records) {
-        const priority = record.type === "MX" && record.priority != null
-          ? ` ${record.priority}`
-          : "";
-        const recordTtl = record.ttl != null ? ` (TTL ${record.ttl})` : "";
-        out(`${record.type}${priority} ${record.value}${recordTtl}`);
+      outJson(reports.length === 1 ? reports[0] : reports);
+    } else if (reports.length === 1) {
+      const [report] = reports;
+      if (report.error) {
+        out(`${report.name}: ${report.error}`);
+      } else if (!report.exists) {
+        out(`${report.name}: name is not registered`);
+      } else if (!report.records.length) {
+        out(type
+          ? `no ${type} records published for ${report.name}`
+          : `no records published for ${report.name}`);
+      } else {
+        for (const record of report.records) {
+          const priority = record.type === "MX" && record.priority != null
+            ? ` ${record.priority}`
+            : "";
+          const recordTtl = record.ttl != null ? ` (TTL ${record.ttl})` : "";
+          out(`${record.type}${priority} ${record.value}${recordTtl}`);
+        }
       }
+    } else {
+      const sections = reports.map((report) => {
+        const lines = [report.name];
+        if (report.error) lines.push(`  ${report.error}`);
+        else if (!report.exists) lines.push("  name is not registered");
+        else if (!report.records.length) {
+          lines.push(type ? `  no ${type} records published` : "  no records published");
+        } else for (const record of report.records) {
+          const priority = record.type === "MX" && record.priority != null
+            ? ` ${record.priority}`
+            : "";
+          const recordTtl = record.ttl != null ? ` (TTL ${record.ttl})` : "";
+          lines.push(`  ${record.type}${priority} ${record.value}${recordTtl}`);
+        }
+        return lines.join("\n");
+      });
+      out(sections.join("\n\n"));
     }
-    return report.error ? 1 : 0;
+    return reports.some((report) => report.error) ? 1 : 0;
   }
 
   if (sub === "resolve") {

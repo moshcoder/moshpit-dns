@@ -339,6 +339,43 @@ test("records inspects and filters the registry record set", async (t) => {
   });
 });
 
+test("records inspects batches in order and reuses repeated lookups", async (t) => {
+  let requests = 0;
+  const registry = await startRegistry(t, (request) => {
+    if (request.url.includes("records=1")) requests += 1;
+  });
+  const result = await run([
+    "records",
+    "blue.eggs",
+    "free.eggs",
+    "blue.eggs",
+    "--type",
+    "txt",
+    "--concurrency",
+    "2",
+    "--registry",
+    registry,
+    "--json",
+  ]);
+
+  assert.equal(result.status, 0);
+  assert.equal(requests, 2);
+  const reports = jsonOutput(result);
+  assert.deepEqual(reports.map(({ name }) => name), ["blue.eggs", "free.eggs", "blue.eggs"]);
+  assert.equal(reports[0].type, "TXT");
+  assert.equal(reports[0].count, 1);
+  assert.equal(reports[1].exists, false);
+  assert.deepEqual(reports[0], reports[2]);
+
+  const human = await run([
+    "records", "blue.eggs", "free.eggs", "--registry", registry,
+  ]);
+  assert.equal(human.status, 0);
+  assert.equal(human.stderr, "");
+  assert.match(human.stdout, /^blue\.eggs\n  MX 10 mail\.example\.com/m);
+  assert.match(human.stdout, /\n\nfree\.eggs\n  name is not registered\n$/);
+});
+
 test("records rejects unsupported types before contacting the registry", async (t) => {
   let requests = 0;
   const registry = await startRegistry(t, () => { requests += 1; });
@@ -353,6 +390,23 @@ test("records rejects unsupported types before contacting the registry", async (
     exists: false,
     registered: null,
     type: "SRV",
+    count: 0,
+    records: [],
+    error: "unsupported record type",
+  });
+
+  const missing = await run([
+    "records", "blue.eggs", "--type", "--registry", registry, "--json",
+  ]);
+  assert.equal(missing.status, 1);
+  assert.equal(requests, 0);
+  assert.deepEqual(jsonOutput(missing), {
+    registry,
+    name: "blue.eggs",
+    status: null,
+    exists: false,
+    registered: null,
+    type: null,
     count: 0,
     records: [],
     error: "unsupported record type",
