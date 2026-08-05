@@ -69,7 +69,7 @@ moshpit-dns service uninstall stop doing that
 moshpit-dns tlds [--json]     list the endings claimed in the Pit
 moshpit-dns records <name> [AAAA|CNAME|MX|TXT] [--json]
                              inspect records published for a name
-moshpit-dns resolve <name...> [--json]
+moshpit-dns resolve <name...> [--concurrency N] [--json]
                              what names resolve to, and why
 moshpit-dns start [--ttl N]   run the bridge in the foreground
 moshpit-dns install           print the resolver config without applying it
@@ -88,6 +88,9 @@ For compatibility, resolving one name returns the established JSON object.
 Resolving multiple names returns an ordered array and exits non-zero when any
 name is invalid or the registry cannot answer it. Repeated names share one
 registry lookup while still retaining their original positions in the output.
+Batch lookups run eight at a time by default; use `--concurrency N` to lower the
+load on a small self-hosted registry or raise it for a larger one without
+changing output order.
 
 `records` and `resolve` take third-level and wildcard names as well:
 `moshpit-dns records '*.chovy.hacker'` inspects what an owner published for
