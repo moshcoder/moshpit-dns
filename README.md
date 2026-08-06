@@ -67,8 +67,8 @@ moshpit-dns service install   keep the bridge running across reboots
 moshpit-dns service uninstall stop doing that
 
 moshpit-dns tlds [--json]     list the endings claimed in the Pit
-moshpit-dns records <name> [AAAA|CNAME|MX|TXT] [--json]
-                             inspect records published for a name
+moshpit-dns records <name...> [--type AAAA|CNAME|MX|TXT] [--json]
+                             inspect records published for names
 moshpit-dns resolve <name...> [--concurrency N] [--json]
                              what names resolve to, and why
 moshpit-dns start [--ttl N]   run the bridge in the foreground
@@ -84,8 +84,8 @@ records, the final DNS address for a resolution, and structured status warnings
 without mixing human-readable lines into stdout.
 Failures such as an unreachable registry still produce valid JSON and a
 non-zero exit status where the command normally fails.
-For compatibility, resolving one name returns the established JSON object.
-Resolving multiple names returns an ordered array and exits non-zero when any
+For compatibility, resolving or inspecting one name returns the established
+JSON object. Multiple names return an ordered array and exit non-zero when any
 name is invalid or the registry cannot answer it. Repeated names share one
 registry lookup while still retaining their original positions in the output.
 Batch lookups run eight at a time by default; use `--concurrency N` to lower the
@@ -100,6 +100,7 @@ everything under their name, and `foo.chovy.hacker` resolves through it.
 moshpit-dns resolve california.oranges --json | jq .address
 moshpit-dns resolve california.oranges blue.eggs --json | jq '.[].address'
 moshpit-dns records california.oranges MX --json | jq '.records[]'
+moshpit-dns records california.oranges blue.eggs --type MX --json | jq '.[].records'
 moshpit-dns status --json | jq '.warnings[]?.code'
 ```
 
