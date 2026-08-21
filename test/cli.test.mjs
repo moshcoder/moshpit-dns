@@ -649,18 +649,25 @@ test("--timeout accepts safe positive milliseconds and rejects timer overflow", 
   }
 });
 
+// The install plan renders per platform — a plist on macOS wraps every
+// argument in <string> tags, a systemd unit keeps them on one line. Folding
+// the tags back into spaces lets one assertion read either shape.
+function planArgs(stdout) {
+  return stdout.replace(/<\/string>\s*<string>/g, " ");
+}
+
 test("service install records the selected TTL", async () => {
   const result = await run(["service", "install", "--ttl", "86400", "--dry-run"]);
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
-  assert.match(result.stdout, /"?--ttl"?\s+"?86400"?/);
+  assert.match(planArgs(result.stdout), /"?--ttl"?\s+"?86400"?/);
 });
 
 test("service install records the selected registry timeout", async () => {
   const result = await run(["service", "--timeout", "1500", "install", "--dry-run"]);
   assert.equal(result.status, 0);
   assert.equal(result.stderr, "");
-  assert.match(result.stdout, /"?--timeout"?\s+"?1500"?/);
+  assert.match(planArgs(result.stdout), /"?--timeout"?\s+"?1500"?/);
 });
 
 test("buildResolutionReport describes a parked DNS answer", () => {
